@@ -1,0 +1,144 @@
+# Plan preview: lessons learned
+
+Working notes from building and debugging the free plot-preview feature
+(`src/lib/plan-ocr.ts`, `src/lib/nigeria-belts.ts`). Kept separate from
+`design.md` (the original spec) because this is implementation-level
+knowledge — the kind that's expensive to re-derive and cheap to write down.
+Update this file when the OCR pipeline teaches us something new; don't let
+it go stale.
+
+---
+
+## 1. Vision API's "line breaks" are not rows
+
+`fullTextAnnotation.text` inserts line breaks based on Vision's own layout
+guess. For a widely-spaced table, that guess is routinely wrong — one cell
+per line instead of one row per line. **Never parse the flat text string for
+anything position-sensitive.** Use the structured
+`pages[].blocks[].paragraphs[].words[].boundingBox` data and reconstruct
+rows/columns from actual pixel coordinates.
+
+## 2. Rotated text scatters unpredictably
+
+A bearing written vertically along a plot's left/right edge doesn't OCR as
+one clean token. Vision splits it into fragments (degrees, the ° symbol,
+minutes, the ' symbol) positioned far apart in Y but aligned within a couple
+of pixels in X. The fix is 2D spatial clustering (group by X-proximity with
+a capped Y-gap so an unrelated same-X digit elsewhere on the page can't be
+pulled in), reading each cluster both top-to-bottom and bottom-to-top since
+the true reading direction isn't knowable in advance.
+
+Coordinates suffixed `mN`/`mE` get the same treatment: real plans print
+these as separate margin labels (Northing along the top, Easting along the
+side), not one paired row. Search the whole page, not one row.
+
+## 3. Numbers with a thousands space silently truncate
+
+`748 024.989mN` OCRs as two tokens: `748` and `024.989mN`. Regex-matching
+the suffixed token alone gives `24989` — three orders of magnitude wrong,
+and structurally valid-looking enough to not obviously fail. **Any
+numeric-token parser needs a plausible-range check**, and a repair step that
+looks for a short integer immediately adjacent (left, or stacked
+vertically) before accepting a value.
+
+## 4. Reading order on the page is not traversal order
+
+Bearing/distance annotations are scattered around a drawing, not listed
+sequentially. Don't assume OCR reading order matches the order legs connect
+around a boundary. Two techniques compound here:
+
+- **Same-row-first pairing, nearest-neighbor fallback.** Pure
+  nearest-2D-position pairing can mispair a multi-word bearing (its anchor
+  is the average of several consumed words, which can drift closer to an
+  adjacent row's distance than its own). Prefer an unambiguous same-row
+  match; fall back to nearest-neighbor only for what's left (typically the
+  rotated bearings, which by construction never share a row with their
+  distance).
+- **Let the closure check solve ordering, but verify by area, not just
+  distance.** Try every permutation (capped — this is factorial) and keep
+  the one that closes. But *minimizing closure error alone is not enough*:
+  with near-cardinal bearings, a degenerate near-zero-area "bowtie" path can
+  close about as well as the real shape. Among orderings that close within a
+  generous tolerance, keep the one with the **largest enclosed area**. Found
+  this via a real plan where the naive pick produced 1.1 m² instead of the
+  correct 668 m² — same closure error, wildly different shape.
+
+## 5. Cross-check against anything the plan states about itself
+
+A stated `PLOT AREA` figure is a free, independent correctness signal —
+compute the polygon's area (shoelace formula) and compare. This caught the
+degenerate-ordering bug above before a user ever saw it. Apply the same
+principle elsewhere: if the source document states a number your pipeline
+also computes, checking them against each other is nearly free and catches
+failure modes no single heuristic will.
+
+## 6. The plan is the source of truth, not the intake form
+
+Projection system (UTM zone vs. Minna belt) and state should be read from
+the plan's own text first (`ORIGIN:-` line, header state name), with the
+buyer-typed form field as a last-resort fallback only. A garbled form entry
+should never block a perfectly legible plan. When the two disagree, surface
+it as an informational note — never as a hard failure.
+
+Real formatting to defend against: letter-spaced abbreviations
+(`U. T. M.` with spaces, not `U.T.M.`) — write patterns with optional
+separators between letters, not literal periods.
+
+## 7. Datum choice is worth real metres — verify empirically
+
+Nigeria's Minna-to-WGS84 transformation isn't one universal shift. Compared
+three candidates against two real, independently-known plot locations:
+
+- EPSG:1822 (nationwide, 3-parameter, ~10m accuracy)
+- EPSG:1534 (Nigeria onshore south, 7-parameter Position Vector)
+- The shift epsg.io defaults EPSG:26331/26332 to
+
+The nationwide and southern fits disagreed by **10.2m** on both sample
+points. Since Lagos/Ogun (where most land dealing happens) fall inside
+EPSG:1534's area of use, that's now used there, with the nationwide shift
+as fallback further north. **Don't trust a single "authoritative-looking"
+EPSG proj4 string without checking it against a point whose real-world
+location you already know** — epsg.io's default for one projection and the
+belt definitions elsewhere in the same country used different shifts here,
+silently, and it took plotting real coordinates to notice.
+
+Even with the right datum, expect **±5-15m of irreducible error**: Google's
+satellite imagery itself carries georeferencing offset, and the grid-label
+anchor point marks a gridline intersection, not the actual beacon. State
+this to users explicitly rather than let a preview look more precise than
+it is.
+
+## 8. Fail-closed beats fail-open, always, in this domain
+
+Every gate in this pipeline (confidence threshold, closure tolerance, area
+cross-check, plausible-span check) exists because a *plausible-looking
+wrong answer* is worse than *no answer* when the product's entire value
+proposition is "don't get scammed on land." When in doubt, return
+`unavailable` with a specific, honest reason — never guess and hope.
+
+## 9. General debugging pattern that worked
+
+For every claim about what OCR/geometry/payment code actually does:
+1. Build a synthetic case reproducing the exact failure.
+2. Test against the *real* exported function (mocked fetch), not a
+   reimplementation — a reimplementation can pass while the shipped code
+   still has the bug.
+3. For anything with real-world ground truth (a coordinate, a payment
+   amount), verify the output against that ground truth, not just "did it
+   not crash."
+4. Deploy, then re-run the same test live before declaring done — several
+   bugs here only appeared with Vision's actual OCR output, not the
+   simplified synthetic fixtures used during development.
+
+## 10. Security lesson: verified ≠ authorized
+
+The Paystack callback verified a transaction was successful and
+correctly-priced, but never checked it was *for the report being marked
+paid*. The reference arrives in an attacker-controllable query param. One
+real payment could be replayed against every other report on the same
+tier. **"This proves a valid X happened" is not the same claim as "this
+proves X happened for the specific record I'm about to mutate."** Any
+webhook/callback verification needs to bind the external proof to the
+internal record explicitly (here: match against the ID stamped into
+Paystack's metadata when the transaction was created), not just check the
+proof is internally valid.
