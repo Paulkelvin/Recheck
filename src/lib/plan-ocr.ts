@@ -12,8 +12,9 @@ export type PlanOcrResult =
   | { status: "unavailable"; reason: string; debug?: OcrDebugInfo };
 
 type OcrDebugInfo = {
-  text: string;
+  words: OcrWord[];
   avgConfidence: number | null;
+  rows: string[][];
   pairs: Array<[number, number]>;
 };
 
@@ -29,7 +30,9 @@ const MAX_SPAN_METERS = 3000;
 // doesn't apply.
 const NIGERIA_BOUNDS = { minLat: 4, maxLat: 14, minLng: 2.5, maxLng: 14.7 };
 
-const COORD_PATTERN = /-?\d{4,7}\.\d{1,3}|-?\d{5,7}\b/g;
+const COORD_PATTERN = /^-?\d{4,7}\.\d{1,3}$|^-?\d{5,7}$/;
+
+type OcrWord = { text: string; x: number; y: number; height: number };
 
 async function fetchAsBase64(url: string): Promise<string> {
   const res = await fetch(url);
@@ -41,7 +44,7 @@ async function fetchAsBase64(url: string): Promise<string> {
 async function runVisionOcr(
   docUrl: string,
   apiKey: string,
-): Promise<{ text: string; avgConfidence: number | null }> {
+): Promise<{ words: OcrWord[]; avgConfidence: number | null }> {
   const isPdf = docUrl.toLowerCase().includes(".pdf");
 
   if (isPdf) {
@@ -62,7 +65,7 @@ async function runVisionOcr(
     if (!res.ok) throw new Error(`Vision API error (${res.status})`);
     const data = await res.json();
     const pageResponse = data.responses?.[0]?.responses?.[0];
-    return extractTextAndConfidence(pageResponse);
+    return extractWordsAndConfidence(pageResponse);
   }
 
   const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
@@ -79,31 +82,53 @@ async function runVisionOcr(
   });
   if (!res.ok) throw new Error(`Vision API error (${res.status})`);
   const data = await res.json();
-  return extractTextAndConfidence(data.responses?.[0]);
+  return extractWordsAndConfidence(data.responses?.[0]);
 }
 
-function extractTextAndConfidence(response: unknown): {
-  text: string;
+type VisionVertex = { x?: number; y?: number };
+type VisionWord = {
+  confidence?: number;
+  boundingBox?: { vertices?: VisionVertex[] };
+  symbols?: Array<{ text?: string }>;
+};
+
+// Reconstructs each word's text and vertical position from Vision's
+// structured response, instead of using fullTextAnnotation.text -- Vision
+// inserts line breaks based on its own layout guess, which for a
+// widely-spaced table routinely puts one cell per "line" instead of one row
+// per line. Row reconstruction below uses actual word geometry instead.
+function extractWordsAndConfidence(response: unknown): {
+  words: OcrWord[];
   avgConfidence: number | null;
 } {
   const r = response as {
     fullTextAnnotation?: {
-      text?: string;
       pages?: Array<{
-        blocks?: Array<{
-          paragraphs?: Array<{ words?: Array<{ confidence?: number }> }>;
-        }>;
+        blocks?: Array<{ paragraphs?: Array<{ words?: VisionWord[] }> }>;
       }>;
     };
   };
 
-  const text = r?.fullTextAnnotation?.text ?? "";
-
+  const words: OcrWord[] = [];
   const confidences: number[] = [];
+
   for (const page of r?.fullTextAnnotation?.pages ?? []) {
     for (const block of page.blocks ?? []) {
       for (const para of block.paragraphs ?? []) {
         for (const word of para.words ?? []) {
+          const text = (word.symbols ?? []).map((s) => s.text ?? "").join("");
+          const vertices = word.boundingBox?.vertices ?? [];
+          if (!text || vertices.length === 0) continue;
+
+          const ys = vertices.map((v) => v.y ?? 0);
+          const xs = vertices.map((v) => v.x ?? 0);
+          words.push({
+            text,
+            x: Math.min(...xs),
+            y: (Math.min(...ys) + Math.max(...ys)) / 2,
+            height: Math.max(...ys) - Math.min(...ys) || 20,
+          });
+
           if (typeof word.confidence === "number") confidences.push(word.confidence);
         }
       }
@@ -115,20 +140,46 @@ function extractTextAndConfidence(response: unknown): {
       ? confidences.reduce((a, b) => a + b, 0) / confidences.length
       : null;
 
-  return { text, avgConfidence };
+  return { words, avgConfidence };
 }
 
-// Pulls candidate beacon coordinate pairs out of raw OCR text: any line with
-// exactly two numbers in the expected magnitude range is treated as one
-// (easting, northing) point, in that order -- the conventional column order
-// on Nigerian cadastral plans. Lines with 0, 1, or 3+ matches are skipped as
-// noise (page numbers, plan refs, scale notes) rather than guessed at.
-function parseCoordinatePairs(text: string): Array<[number, number]> {
+// Groups words into table rows by vertical position instead of Vision's text
+// line breaks: sort by Y, start a new row whenever the gap to the next word
+// exceeds half a typical word's height, then sort each row left-to-right.
+function groupIntoRows(words: OcrWord[]): OcrWord[][] {
+  if (words.length === 0) return [];
+
+  const sorted = [...words].sort((a, b) => a.y - b.y);
+  const medianHeight = sorted.map((w) => w.height).sort((a, b) => a - b)[
+    Math.floor(sorted.length / 2)
+  ];
+  const rowGapThreshold = medianHeight * 0.6;
+
+  const rows: OcrWord[][] = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prevRow = rows[rows.length - 1];
+    const rowY = prevRow.reduce((sum, w) => sum + w.y, 0) / prevRow.length;
+    if (Math.abs(sorted[i].y - rowY) <= rowGapThreshold) {
+      prevRow.push(sorted[i]);
+    } else {
+      rows.push([sorted[i]]);
+    }
+  }
+
+  return rows.map((row) => row.sort((a, b) => a.x - b.x));
+}
+
+// Within each reconstructed row, a numeric token is a candidate beacon
+// coordinate. A row is only used if exactly two tokens in the whole row
+// match the coordinate pattern -- extra numbers (a beacon label like "12",
+// a third stray value) make the row ambiguous, so it's skipped rather than
+// guessed at.
+function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
   const pairs: Array<[number, number]> = [];
-  for (const line of text.split("\n")) {
-    const matches = line.match(COORD_PATTERN);
-    if (!matches || matches.length !== 2) continue;
-    const [a, b] = matches.map(Number);
+  for (const row of rows) {
+    const numeric = row.map((w) => w.text).filter((t) => COORD_PATTERN.test(t));
+    if (numeric.length !== 2) continue;
+    const [a, b] = numeric.map(Number);
     if (Number.isFinite(a) && Number.isFinite(b)) pairs.push([a, b]);
   }
   return pairs;
@@ -168,17 +219,20 @@ export async function extractPlanPreview(
     return { status: "unavailable", reason: "unknown_belt" };
   }
 
-  let text: string;
+  let words: OcrWord[];
   let avgConfidence: number | null;
   try {
-    ({ text, avgConfidence } = await runVisionOcr(docUrl, apiKey));
+    ({ words, avgConfidence } = await runVisionOcr(docUrl, apiKey));
   } catch (err) {
     console.error("[plan-ocr] Vision API call failed:", err);
     return { status: "unavailable", reason: "ocr_failed" };
   }
 
-  const pairs = parseCoordinatePairs(text);
-  const debug = includeDebug ? { text, avgConfidence, pairs } : undefined;
+  const rows = groupIntoRows(words);
+  const pairs = pairsFromRows(rows);
+  const debug = includeDebug
+    ? { words, avgConfidence, rows: rows.map((r) => r.map((w) => w.text)), pairs }
+    : undefined;
 
   if (avgConfidence !== null && avgConfidence < MIN_CONFIDENCE) {
     return { status: "unavailable", reason: "low_confidence", debug };
