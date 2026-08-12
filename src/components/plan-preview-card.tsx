@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadGoogleMaps } from "@/lib/google-maps-loader";
+import { loadGoogleMaps, MapsLoadError } from "@/lib/google-maps-loader";
 
 type PreviewState =
   | { status: "idle" }
@@ -29,6 +29,7 @@ const REASON_MESSAGES: Record<string, string> = {
   too_many_legs: "This plan has more boundary points than we can automatically check.",
   unexpected_error: "Something went wrong while reading this plan.",
   timed_out: "This is taking longer than expected, so we've stopped waiting.",
+  map_unavailable: "We read your plan fine, but the map couldn't load just now.",
 };
 
 const FALLBACK_MESSAGE =
@@ -104,15 +105,18 @@ export function PlanPreviewCard({ reportId }: { reportId: string }) {
     if (state.status !== "available" || !mapRef.current) return;
     let cancelled = false;
 
+    const coordinates = state.coordinates;
+    const note = state.note;
+
     loadGoogleMaps()
       .then(() => {
-        if (cancelled || !mapRef.current || state.status !== "available") return;
+        if (cancelled || !mapRef.current) return;
 
         const bounds = new google.maps.LatLngBounds();
-        state.coordinates.forEach((p) => bounds.extend(p));
+        coordinates.forEach((p) => bounds.extend(p));
 
         const map = new google.maps.Map(mapRef.current, {
-          center: state.coordinates[0],
+          center: coordinates[0],
           zoom: 18,
           mapTypeId: "satellite",
           disableDefaultUI: true,
@@ -121,7 +125,7 @@ export function PlanPreviewCard({ reportId }: { reportId: string }) {
         map.fitBounds(bounds, 40);
 
         new google.maps.Polygon({
-          paths: state.coordinates,
+          paths: coordinates,
           strokeColor: "#facc15",
           strokeWeight: 3,
           fillColor: "#facc15",
@@ -129,8 +133,18 @@ export function PlanPreviewCard({ reportId }: { reportId: string }) {
           map,
         });
       })
-      .catch(() => {
-        if (!cancelled) setState({ status: "unavailable", reason: "not_configured", note: null });
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // Only a genuinely missing key is "not configured" -- anything else
+        // (a rejected key, a blocked script, a render error) is a map
+        // problem, and reporting it as a config problem sent a previous
+        // debugging session chasing the wrong thing entirely.
+        const reason =
+          err instanceof MapsLoadError && err.kind === "not_configured"
+            ? "not_configured"
+            : "map_unavailable";
+        console.error("[plan-preview] map render failed:", err);
+        setState({ status: "unavailable", reason, note });
       });
 
     return () => {
