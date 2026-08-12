@@ -108,6 +108,43 @@ anchor point marks a gridline intersection, not the actual beacon. State
 this to users explicitly rather than let a preview look more precise than
 it is.
 
+## 6a. Spatial heuristic thresholds must scale with the image, not be fixed pixels
+
+Any distance threshold used to cluster/associate OCR words by position
+(`bearingCandidatesFromVerticalColumns`'s X-tolerance and Y-gap,
+`resolveGridValue`'s nearby-digit search) has to be expressed as a multiple
+of the page's own median word height, not a fixed pixel count. Found this
+by testing whether upscaling a low-quality scan before sending it to Vision
+would recover more legible text — it made parsing *worse*, because the
+fixed-pixel thresholds were calibrated against one native-resolution
+document, and upscaling scaled every word's spacing without scaling the
+thresholds to match. `groupIntoRows` already did this correctly; the other
+two clustering functions didn't, until this was caught.
+
+Practical implication: **auto-upscaling a faint scan is not automatically
+a win** even after fixing this — it may recover more legible characters,
+but if a plan's genuine problem is which text belongs to which drawn line
+(see 6b), higher resolution alone doesn't solve that.
+
+## 6b. Position alone can't disambiguate a label shared between two edges
+
+A bearing's degree and minute fragments are sometimes printed at different
+points *along the same diagonal edge line* — not just split by OCR into
+awkward tokens, but genuinely positioned far apart on the page, with the
+minutes fragment sometimes sitting closer (in raw pixel distance) to a
+*different* edge's bearing than to its own. Found a real case: an edge's
+"047°" sat near one corner, its own "10'" sat right next to a *different*
+edge's "137°" near the shared corner both edges meet at — closer to the
+wrong bearing than the right one, by pixel distance alone.
+
+This is not an OCR-quality problem and higher resolution doesn't fix it.
+It requires knowing which drawn line (which pair of beacons) each label
+actually sits along — real line/vector detection from the image, not text
+position clustering. Don't try to special-case this with more position
+heuristics; it needs a genuinely different technique, or accepting it as a
+known limitation (which is what this pipeline currently does: it declines
+rather than guesses, consistent with §8).
+
 ## 7a. Hard requirement: Minna datum, always
 
 Product decision, stated explicitly: the system must always use Minna
