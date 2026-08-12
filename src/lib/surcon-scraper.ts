@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
 
 export type SurconScrapeResult = {
   status: "registered" | "not_found" | "suspended";
@@ -37,11 +37,7 @@ export async function scrapeSurconStatus(
     throw new SurconNotConfiguredError();
   }
 
-  // Some hosts (e.g. this repo's dev container) ship a pre-installed
-  // Chromium at a fixed path rather than the revision Playwright expects by
-  // default; point at it explicitly when set instead of `npx playwright install`.
-  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined;
-  const browser = await chromium.launch({ headless: true, executablePath });
+  const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
@@ -61,6 +57,29 @@ export async function scrapeSurconStatus(
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * Vercel's serverless functions don't ship a browser binary, so in
+ * production we pull in @sparticuz/chromium -- a Chromium build packaged
+ * specifically to run inside AWS Lambda/Vercel-style functions. Locally (or
+ * on any host with its own Chromium install), set PLAYWRIGHT_CHROMIUM_PATH
+ * to skip that and point straight at it instead.
+ */
+async function launchBrowser() {
+  const overridePath = process.env.PLAYWRIGHT_CHROMIUM_PATH;
+  if (overridePath) {
+    return chromium.launch({ headless: true, executablePath: overridePath });
+  }
+
+  const sparticuzChromium = (await import("@sparticuz/chromium")).default;
+  const executablePath = await sparticuzChromium.executablePath();
+
+  return chromium.launch({
+    headless: true,
+    executablePath,
+    args: sparticuzChromium.args,
+  });
 }
 
 function classifyResult(rawResult: string): SurconScrapeResult["status"] {

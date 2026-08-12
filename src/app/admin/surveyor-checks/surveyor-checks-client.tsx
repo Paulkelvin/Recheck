@@ -20,7 +20,6 @@ export function SurveyorChecksClient() {
   const [loading, setLoading] = useState(true);
   const [surveyorName, setSurveyorName] = useState("");
   const [regNumber, setRegNumber] = useState("");
-  const [tryAutomated, setTryAutomated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,11 +46,7 @@ export function SurveyorChecksClient() {
     const res = await fetch("/api/surveyor-check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        surveyorName,
-        regNumber: regNumber || undefined,
-        method: tryAutomated ? "automated" : "manual",
-      }),
+      body: JSON.stringify({ surveyorName, regNumber: regNumber || undefined }),
     });
 
     setSubmitting(false);
@@ -64,7 +59,6 @@ export function SurveyorChecksClient() {
 
     setSurveyorName("");
     setRegNumber("");
-    setTryAutomated(false);
     load();
   };
 
@@ -104,14 +98,6 @@ export function SurveyorChecksClient() {
             className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           />
         </label>
-        <label className="flex items-center gap-1.5 pb-2 text-sm text-zinc-700 dark:text-zinc-300">
-          <input
-            type="checkbox"
-            checked={tryAutomated}
-            onChange={(e) => setTryAutomated(e.target.checked)}
-          />
-          Try automated first
-        </label>
         <button
           type="submit"
           disabled={submitting}
@@ -120,11 +106,6 @@ export function SurveyorChecksClient() {
           {submitting ? "Queuing..." : "Queue check"}
         </button>
       </form>
-      <p className="-mt-4 text-xs text-zinc-500">
-        &quot;Try automated first&quot; only does anything once the SURCON scraper
-        worker is configured and running (scripts/surcon-scan-worker.ts) --
-        otherwise it behaves exactly like manual entry.
-      </p>
 
       {error && (
         <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
@@ -141,7 +122,7 @@ export function SurveyorChecksClient() {
       ) : (
         <ul className="flex flex-col gap-4">
           {checks.map((check) => (
-            <CheckRow key={check.id} check={check} onResolve={handleResolve} />
+            <CheckRow key={check.id} check={check} onResolve={handleResolve} onRefresh={load} />
           ))}
         </ul>
       )}
@@ -152,6 +133,7 @@ export function SurveyorChecksClient() {
 function CheckRow({
   check,
   onResolve,
+  onRefresh,
 }: {
   check: SurveyorCheck;
   onResolve: (
@@ -159,11 +141,33 @@ function CheckRow({
     status: Exclude<CheckStatus, null>,
     rawResult: string,
   ) => void;
+  onRefresh: () => void;
 }) {
   const [status, setStatus] = useState<Exclude<CheckStatus, null>>(
     check.status ?? "registered",
   );
   const [rawResult, setRawResult] = useState(check.rawResult ?? "");
+  const [running, setRunning] = useState(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
+
+  const handleRunAutomated = async () => {
+    setRunning(true);
+    setAutoError(null);
+
+    const res = await fetch(`/api/surveyor-check/${check.id}/run-automated`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setRunning(false);
+
+    if (!res.ok) {
+      setAutoError(data.error || "Automated check failed — resolve it manually below.");
+      return;
+    }
+
+    onRefresh();
+  };
 
   return (
     <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
@@ -175,9 +179,6 @@ function CheckRow({
               ({check.regNumber})
             </span>
           )}
-          {!check.status && check.method === "automated" && (
-            <span className="ml-2 text-xs text-zinc-400">waiting on worker...</span>
-          )}
         </p>
         <StatusBadge status={check.status} />
       </div>
@@ -185,39 +186,56 @@ function CheckRow({
       {check.status ? (
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
           {check.rawResult || "No notes"} — checked{" "}
-          {check.checkedAt ? new Date(check.checkedAt).toLocaleString() : ""}
+          {check.checkedAt ? new Date(check.checkedAt).toLocaleString() : ""} (
+          {check.method})
         </p>
       ) : (
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-          <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
-            Result
-            <select
-              value={status}
-              onChange={(e) =>
-                setStatus(e.target.value as Exclude<CheckStatus, null>)
-              }
-              className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-            >
-              <option value="registered">Registered</option>
-              <option value="not_found">Not found</option>
-              <option value="suspended">Suspended</option>
-            </select>
-          </label>
-          <label className="flex flex-1 flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
-            Notes
-            <input
-              value={rawResult}
-              onChange={(e) => setRawResult(e.target.value)}
-              placeholder="e.g. firm name, what SURCON showed"
-              className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-            />
-          </label>
+        <div className="mt-3 flex flex-col gap-3">
+          {autoError && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              {autoError}
+            </p>
+          )}
+
           <button
-            onClick={() => onResolve(check.id, status, rawResult)}
-            className="h-11 rounded-full border border-zinc-300 px-4 text-sm font-medium text-black transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+            onClick={handleRunAutomated}
+            disabled={running}
+            className="h-10 self-start rounded-full border border-zinc-300 px-4 text-sm font-medium text-black transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
           >
-            Save result
+            {running ? "Running..." : "Run automated check"}
           </button>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+              Result
+              <select
+                value={status}
+                onChange={(e) =>
+                  setStatus(e.target.value as Exclude<CheckStatus, null>)
+                }
+                className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+              >
+                <option value="registered">Registered</option>
+                <option value="not_found">Not found</option>
+                <option value="suspended">Suspended</option>
+              </select>
+            </label>
+            <label className="flex flex-1 flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+              Notes
+              <input
+                value={rawResult}
+                onChange={(e) => setRawResult(e.target.value)}
+                placeholder="e.g. firm name, what SURCON showed"
+                className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+              />
+            </label>
+            <button
+              onClick={() => onResolve(check.id, status, rawResult)}
+              className="h-11 rounded-full border border-zinc-300 px-4 text-sm font-medium text-black transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+            >
+              Save result manually
+            </button>
+          </div>
         </div>
       )}
     </li>
