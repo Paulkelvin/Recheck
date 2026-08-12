@@ -10,7 +10,7 @@ export default async function AdminReportsPage() {
 
   return (
     <div className="mx-auto w-full max-w-3xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-foreground">Land Scam Check reports</h1>
+      <h1 className="text-2xl font-semibold text-foreground">Recheck reports</h1>
 
       {reports.length === 0 ? (
         <p className="mt-6 text-sm text-muted">No reports submitted yet.</p>

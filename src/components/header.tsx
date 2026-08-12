@@ -15,9 +15,9 @@ export function Header() {
           className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-foreground sm:gap-2 sm:text-lg"
         >
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand text-xs font-bold text-brand-foreground sm:h-8 sm:w-8 sm:text-sm">
-            LS
+            R
           </span>
-          <span>Land Scam Check</span>
+          <span>Recheck</span>
         </Link>
 
         <nav className="hidden items-center gap-6 text-sm font-medium text-muted sm:flex">
@@ -54,9 +54,11 @@ export function Header() {
               <LinkButton href="/login" variant="ghost" size="sm">
                 Sign in
               </LinkButton>
-              <LinkButton href="/signup" variant="primary" size="sm">
-                Sign up
-              </LinkButton>
+              <span className="hidden sm:inline-block">
+                <LinkButton href="/signup" variant="primary" size="sm">
+                  Sign up
+                </LinkButton>
+              </span>
             </>
           )}
         </div>

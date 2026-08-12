@@ -34,7 +34,7 @@ export default async function PaymentPage({
   return (
     <div className="mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center px-6 py-12 text-center">
       <h1 className="text-2xl font-semibold text-foreground">
-        Pay to start your Land Scam Check
+        Pay to start your Recheck
       </h1>
       <p className="mt-2 text-2xl font-semibold text-foreground">
         ₦{priceNaira.toLocaleString()}

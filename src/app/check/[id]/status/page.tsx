@@ -37,7 +37,7 @@ export default async function StatusPage({
 
   return (
     <div className="mx-auto w-full max-w-xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-foreground">Your Land Scam Check</h1>
+      <h1 className="text-2xl font-semibold text-foreground">Your Recheck</h1>
 
       {payment === "success" && (
         <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">

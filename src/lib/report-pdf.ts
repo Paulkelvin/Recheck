@@ -76,7 +76,7 @@ function buildReportHtml(report: ReportForPdf, findings: FindingForPdf[]): strin
         </style>
       </head>
       <body>
-        <h1>Land Scam Check Report</h1>
+        <h1>Recheck Report</h1>
         <p class="subtitle">
           ${escapeHtml(report.state)}, ${escapeHtml(report.lga)}
           ${report.planNumber ? ` — plan ${escapeHtml(report.planNumber)}` : ""}

@@ -50,7 +50,7 @@ export default async function ReportPage({
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
       <h1 className="text-2xl font-semibold text-foreground">
-        Your Land Scam Check report
+        Your Recheck report
       </h1>
       <p className="mt-1 text-sm text-muted">
         {report.state}, {report.lga}

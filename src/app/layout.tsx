@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Land Scam Check",
+  title: "Recheck",
   description: "Verify surveyors and survey plans before you pay for land.",
 };
 
@@ -34,7 +34,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               Privacy Policy
             </a>
             <span className="mx-2">·</span>
-            <span>© {new Date().getFullYear()} Land Scam Check</span>
+            <span>© {new Date().getFullYear()} Recheck</span>
           </footer>
         </Providers>
       </body>

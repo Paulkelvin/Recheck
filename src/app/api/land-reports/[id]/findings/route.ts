@@ -132,7 +132,7 @@ export async function PUT(
         if (!whatsappResult.sent) {
           await sendSms(
             buyer.phone,
-            `Hi ${buyer.name}, your Land Scam Check report is ready: ${statusUrl}`,
+            `Hi ${buyer.name}, your Recheck report is ready: ${statusUrl}`,
           );
         }
       }

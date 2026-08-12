@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "Privacy Policy — Land Scam Check",
+  title: "Privacy Policy — Recheck",
 };
 
 export default function PrivacyPage() {
@@ -15,7 +15,7 @@ export default function PrivacyPage() {
           <h2 className="mb-2 font-semibold text-foreground">
             1. What we collect
           </h2>
-          <p>When you use Land Scam Check, we collect:</p>
+          <p>When you use Recheck, we collect:</p>
           <ul className="ml-5 mt-2 list-disc">
             <li>Your name, email address, and phone number, when you create an account.</li>
             <li>
@@ -39,7 +39,7 @@ export default function PrivacyPage() {
             2. Why we collect it
           </h2>
           <p>
-            We use this information only to run the Land Scam Check service: to carry out
+            We use this information only to run the Recheck service: to carry out
             the checks you pay for, to let our partner surveyors and legal partners review
             your documents, to send you updates about your report&apos;s progress, and to
             maintain the surveyor directory. We do not sell your data, and we do not use it
@@ -90,7 +90,7 @@ export default function PrivacyPage() {
             6. SURCON and third-party verification
           </h2>
           <p>
-            Land Scam Check is not affiliated with, endorsed by, or an official channel of
+            Recheck is not affiliated with, endorsed by, or an official channel of
             the Surveyors Council of Nigeria (SURCON) or any government land registry. Where
             we reference SURCON registration status, this reflects our own admin team&apos;s
             or partner surveyors&apos; best-effort verification, not an official SURCON
