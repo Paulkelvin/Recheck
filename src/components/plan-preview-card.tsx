@@ -22,6 +22,8 @@ const REASON_MESSAGES: Record<string, string> = {
   ocr_failed: "We couldn't read the uploaded document.",
   low_confidence: "The uploaded document wasn't clear enough to read automatically.",
   insufficient_coordinates: "We couldn't find plot coordinates on this document.",
+  insufficient_legs:
+    "We found where this plot starts, but couldn't read its boundary bearings clearly enough.",
   implausible_coordinates: "The coordinates we found didn't look right, so we're not showing them.",
   outside_nigeria: "The coordinates we found didn't check out, so we're not showing them.",
   traverse_did_not_close: "The plot boundary we calculated didn't add up, so we're not showing it.",
@@ -184,7 +186,15 @@ export function PlanPreviewCard({ reportId }: { reportId: string }) {
       )}
 
       {state.status === "available" && (
-        <div ref={mapRef} className="h-56 w-full border-t border-border sm:h-72" />
+        <>
+          <div ref={mapRef} className="h-56 w-full border-t border-border sm:h-72" />
+          <p className="border-t border-border px-4 py-3 text-xs text-muted">
+            Indicative position only. The outline is drawn from your plan&apos;s own
+            coordinates, but satellite imagery and datum conversion each shift things
+            by a few metres — treat it as roughly where the plot sits, not as a
+            boundary you can build to.
+          </p>
+        </>
       )}
     </div>
   );

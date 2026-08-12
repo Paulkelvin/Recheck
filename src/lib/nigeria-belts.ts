@@ -10,29 +10,53 @@ export type ProjectionSystem =
   | { type: "belt"; belt: NigeriaBelt }
   | { type: "utm"; zone: UtmZone };
 
-// Definitions pulled verbatim from EPSG (epsg.io/26391, /26392, /26393,
-// /26331, /26332) -- don't hand-edit these, a wrong constant silently
-// shifts every plotted point.
+// Projection definitions pulled verbatim from EPSG (epsg.io/26391, /26392,
+// /26393, /26331, /26332), minus the datum shift, which is chosen per-point
+// below. Don't hand-edit these constants -- a wrong digit silently moves
+// every plotted point.
 const BELT_PROJ4: Record<NigeriaBelt, string> = {
   // EPSG:26391 -- Minna / Nigeria West Belt
   west:
-    "+proj=tmerc +lat_0=4 +lon_0=4.5 +k=0.99975 +x_0=230738.26 +y_0=0 +a=6378249.145 +rf=293.465 +towgs84=-92,-93,122,0,0,0,0 +units=m +no_defs +type=crs",
+    "+proj=tmerc +lat_0=4 +lon_0=4.5 +k=0.99975 +x_0=230738.26 +y_0=0 +a=6378249.145 +rf=293.465 +units=m +no_defs",
   // EPSG:26392 -- Minna / Nigeria Mid Belt
   mid:
-    "+proj=tmerc +lat_0=4 +lon_0=8.5 +k=0.99975 +x_0=670553.98 +y_0=0 +a=6378249.145 +rf=293.465 +towgs84=-92,-93,122,0,0,0,0 +units=m +no_defs +type=crs",
+    "+proj=tmerc +lat_0=4 +lon_0=8.5 +k=0.99975 +x_0=670553.98 +y_0=0 +a=6378249.145 +rf=293.465 +units=m +no_defs",
   // EPSG:26393 -- Minna / Nigeria East Belt
   east:
-    "+proj=tmerc +lat_0=4 +lon_0=12.5 +k=0.99975 +x_0=1110369.7 +y_0=0 +a=6378249.145 +rf=293.465 +towgs84=-92,-93,122,0,0,0,0 +units=m +no_defs +type=crs",
+    "+proj=tmerc +lat_0=4 +lon_0=12.5 +k=0.99975 +x_0=1110369.7 +y_0=0 +a=6378249.145 +rf=293.465 +units=m +no_defs",
 };
 
 const UTM_PROJ4: Record<UtmZone, string> = {
-  // EPSG:26331 -- Minna / UTM zone 31N (common on Lagos-area plans)
-  31: "+proj=utm +zone=31 +a=6378249.145 +rf=293.465 +towgs84=-93.6,-83.7,113.8,0,0,0,0 +units=m +no_defs +type=crs",
+  // EPSG:26331 -- Minna / UTM zone 31N (common on Lagos/Ogun-area plans)
+  31: "+proj=utm +zone=31 +a=6378249.145 +rf=293.465 +units=m +no_defs",
   // EPSG:26332 -- Minna / UTM zone 32N
-  32: "+proj=utm +zone=32 +a=6378249.145 +rf=293.465 +towgs84=-93.6,-83.7,113.8,0,0,0,0 +units=m +no_defs +type=crs",
+  32: "+proj=utm +zone=32 +a=6378249.145 +rf=293.465 +units=m +no_defs",
 };
 
+// Getting from Minna to WGS84 needs a datum shift, and the choice is worth
+// real metres on the ground -- these two place the same point 10.2m apart,
+// so it is not a detail.
+//
+// EPSG:1822 is the nationwide 3-parameter shift (~10m, all of Nigeria).
+// EPSG:1534 is a 7-parameter Position Vector transformation fitted
+// specifically to Nigeria onshore south -- which is where Lagos, Ogun and
+// most of the country's land dealing actually is. Measured against both
+// sample plans, the southern fit and the nationwide fit disagree by 10.2m,
+// so the region-specific one is used wherever it applies and the nationwide
+// one only outside its area of validity.
+const SHIFT_NATIONWIDE = "-92,-93,122,0,0,0,0";
+const SHIFT_ONSHORE_SOUTH = "-111.92,-87.85,114.5,1.875,0.202,0.219,0.032";
+// Northern edge of EPSG:1534's area of use, approximated by latitude. The
+// two shifts differ by ~10m, nowhere near enough to make a point near this
+// boundary fall on the wrong side of it.
+const ONSHORE_SOUTH_MAX_LAT = 9;
+
 const WGS84 = "+proj=longlat +datum=WGS84 +no_defs";
+
+function definitionFor(system: ProjectionSystem, shift: string): string {
+  const base = system.type === "belt" ? BELT_PROJ4[system.belt] : UTM_PROJ4[system.zone];
+  return `${base} +towgs84=${shift}`;
+}
 
 // Belts are officially defined by longitude (west of 6°30'E / between 6°30'E
 // and 10°30'E / east of 10°30'E), not by state. States that straddle a
@@ -106,10 +130,15 @@ export function findStateInText(text: string): string | null {
 export type LatLng = { lat: number; lng: number };
 
 // Converts one Nigerian cadastral easting/northing pair to WGS84 lat/lng.
-// Throws if proj4 can't parse the definition (shouldn't happen -- these are
-// fixed, verified strings above).
+// Runs the nationwide shift first purely to find out which region the point
+// falls in, then redoes it with the southern fit when that one applies.
 export function pointToLatLng(easting: number, northing: number, system: ProjectionSystem): LatLng {
-  const def = system.type === "belt" ? BELT_PROJ4[system.belt] : UTM_PROJ4[system.zone];
-  const [lng, lat] = proj4(def, WGS84, [easting, northing]);
-  return { lat, lng };
+  const [lng, lat] = proj4(definitionFor(system, SHIFT_NATIONWIDE), WGS84, [easting, northing]);
+  if (lat >= ONSHORE_SOUTH_MAX_LAT) return { lat, lng };
+
+  const [southLng, southLat] = proj4(definitionFor(system, SHIFT_ONSHORE_SOUTH), WGS84, [
+    easting,
+    northing,
+  ]);
+  return { lat: southLat, lng: southLng };
 }

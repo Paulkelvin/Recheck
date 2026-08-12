@@ -31,6 +31,7 @@ type OcrDebugInfo = {
   rows: string[][];
   pairs: Array<[number, number]>;
   method?: "table" | "traverse";
+  startPoint?: [number, number];
   legs?: LegCandidate[];
   closureErrorM?: number;
   projection?: string;
@@ -51,8 +52,15 @@ const MAX_SPAN_METERS = 3000;
 const NIGERIA_BOUNDS = { minLat: 4, maxLat: 14, minLng: 2.5, maxLng: 14.7 };
 
 const COORD_PATTERN = /^-?\d{4,7}\.\d{1,3}$|^-?\d{5,7}$/;
-const NORTHING_TOKEN = /^(\d{4,7}(?:\.\d{1,3})?)mN$/i;
-const EASTING_TOKEN = /^(\d{4,7}(?:\.\d{1,3})?)mE$/i;
+// Deliberately allows as few as 3 leading digits: plans print these with a
+// thousands space ("748 024.989mN"), which OCR returns as two tokens, so the
+// suffixed half arrives truncated and is repaired by resolveGridValue below.
+const NORTHING_TOKEN = /^(\d{3,7}(?:\.\d{1,3})?)mN$/i;
+const EASTING_TOKEN = /^(\d{3,7}(?:\.\d{1,3})?)mE$/i;
+const GRID_PREFIX_TOKEN = /^\d{1,3}$/;
+// Nigerian grid values are 6-7 digits; anything outside this is a bad join.
+const MIN_GRID_VALUE = 100_000;
+const MAX_GRID_VALUE = 2_000_000;
 
 // Most Nigerian survey plans don't list every beacon's absolute coordinate --
 // they give one starting beacon's Easting/Northing, then a "traverse": a
@@ -243,7 +251,11 @@ function detectProjection(
   formState: string,
 ): { system: ProjectionSystem; label: string } | null {
   const upper = fullText.toUpperCase();
-  const mentionsUtm = /\bU\.?T\.?M\.?\b/.test(upper);
+  // Real plans letter-space this ("ORIGIN:- U. T. M. (ZONE 31)") and OCR
+  // preserves the gaps, so the separators have to be optional -- without
+  // this the plan's own stated system is missed and it silently falls back
+  // to guessing a belt from the state name.
+  const mentionsUtm = /\bU\.?\s*T\.?\s*M\.?/.test(upper);
 
   if (mentionsUtm) {
     const zoneMatch = upper.match(/ZONE\s*(\d{1,2})/);
@@ -301,14 +313,51 @@ function locationDiscrepancyNote(fullText: string, formState: string): string | 
 // along the top, "584652.633mE" along the side) rather than as one paired
 // row -- so this searches the whole page, not just one row, for exactly one
 // of each suffix.
+// Repairs a grid value that OCR split at the thousands space. The leading
+// group is rejoined from the nearest short integer sitting either
+// immediately to the left (a horizontal margin label) or directly
+// above/below (a label rotated 90 degrees along the drawing's edge, which is
+// how the easting is usually printed). The rejoined value is only accepted
+// if it lands in a plausible range, so a coincidental nearby number can't
+// silently relocate the whole plot.
+function resolveGridValue(token: OcrWord, raw: string, words: OcrWord[]): number | null {
+  const direct = Number(raw);
+  if (Number.isFinite(direct) && direct >= MIN_GRID_VALUE && direct <= MAX_GRID_VALUE) {
+    return direct;
+  }
+
+  let best: { value: number; distance: number } | null = null;
+  for (const candidate of words) {
+    if (candidate === token || !GRID_PREFIX_TOKEN.test(candidate.text)) continue;
+
+    const dx = token.x - candidate.x;
+    const dy = token.y - candidate.y;
+    const sameLineToTheLeft = Math.abs(dy) <= 15 && dx > 0 && dx <= 90;
+    const stackedVertically = Math.abs(dx) <= 20 && Math.abs(dy) <= 90;
+    if (!sameLineToTheLeft && !stackedVertically) continue;
+
+    const value = Number(`${candidate.text}${raw}`);
+    if (!Number.isFinite(value) || value < MIN_GRID_VALUE || value > MAX_GRID_VALUE) continue;
+
+    const distance = Math.hypot(dx, dy);
+    if (!best || distance < best.distance) best = { value, distance };
+  }
+
+  return best?.value ?? null;
+}
+
 function findStartCoordinateGlobal(words: OcrWord[]): [number, number] | null {
   const northings = words.filter((w) => NORTHING_TOKEN.test(w.text));
   const eastings = words.filter((w) => EASTING_TOKEN.test(w.text));
   if (northings.length !== 1 || eastings.length !== 1) return null;
 
-  const northing = Number(northings[0].text.match(NORTHING_TOKEN)![1]);
-  const easting = Number(eastings[0].text.match(EASTING_TOKEN)![1]);
-  if (!Number.isFinite(northing) || !Number.isFinite(easting)) return null;
+  const northing = resolveGridValue(
+    northings[0],
+    northings[0].text.match(NORTHING_TOKEN)![1],
+    words,
+  );
+  const easting = resolveGridValue(eastings[0], eastings[0].text.match(EASTING_TOKEN)![1], words);
+  if (northing === null || easting === null) return null;
 
   return [easting, northing];
 }
@@ -762,6 +811,7 @@ export async function extractPlanPreview(
   // traverse for the rest -- the more common real-world case.
   const start = findStartCoordinateGlobal(words) ?? (pairs.length === 1 ? pairs[0] : null);
   if (start) {
+    debugInfo.startPoint = start;
     const scaleBar = scaleBarWords(rows);
     const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
     const excludedFromColumns = new Set([...scaleBar, ...consumed]);
@@ -770,8 +820,11 @@ export async function extractPlanPreview(
     const legs = pairNearestLegs(bearings, distances);
     debugInfo.legs = legs;
 
+    // Distinct from "insufficient_coordinates": the plot's position was
+    // found, it's the boundary itself that couldn't be read. Reporting both
+    // as the same thing sends anyone debugging a plan down the wrong path.
     if (legs.length < MIN_POINTS) {
-      return unavailable("insufficient_coordinates");
+      return unavailable("insufficient_legs");
     }
 
     const best = bestClosingOrder(start, legs);
