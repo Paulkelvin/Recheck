@@ -29,6 +29,32 @@ const CHECK_ICONS: Record<CheckType, React.ComponentType<{ className?: string }>
   encumbrance: Banknote,
 };
 
+// Matches the icon chip's own shape (64px square, 16px corners -- Tailwind's
+// h-16 w-16 rounded-2xl) instead of a circle, so the cutout in the card
+// below it lines up with the chip's actual silhouette. A radial-gradient
+// can't produce a rounded-square hole, so this is an inline SVG mask: a
+// rect punched out of an opaque canvas via SVG's own <mask>, centered
+// horizontally and offset up by half the chip's height (the chip's
+// vertical center sits exactly on the card's top edge).
+//
+// The canvas is deliberately huge (2000x2000, not just big enough for the
+// hole) and mask-position centers it on the card -- gradients have no
+// intrinsic size and auto-cover the whole element, but this SVG data URI
+// does have one, and mask-repeat:no-repeat only paints within that one
+// sized instance. Anything outside it counts as unmasked, i.e. fully
+// hidden -- a too-small canvas doesn't just fail to make a hole, it wipes
+// out the entire rest of the card. Oversizing it is what makes it behave
+// like the gradient did.
+const ICON_CUTOUT_MASK = `url("data:image/svg+xml,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='2000' height='2000'>" +
+    "<mask id='m'>" +
+    "<rect width='2000' height='2000' fill='white'/>" +
+    "<rect x='966' y='-34' width='68' height='68' rx='17' fill='black'/>" +
+    "</mask>" +
+    "<rect width='2000' height='2000' fill='black' mask='url(#m)'/>" +
+    "</svg>",
+)}")`;
+
 export default function Home() {
   return (
     <div className="flex flex-1 flex-col">
@@ -79,10 +105,12 @@ export default function Home() {
                 <div
                   className="flex w-full flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-9 pt-14 shadow-sm transition-shadow group-hover:shadow-md"
                   style={{
-                    WebkitMaskImage:
-                      "radial-gradient(circle 40px at 50% 0px, transparent 99%, black 100%)",
-                    maskImage:
-                      "radial-gradient(circle 40px at 50% 0px, transparent 99%, black 100%)",
+                    WebkitMaskImage: ICON_CUTOUT_MASK,
+                    maskImage: ICON_CUTOUT_MASK,
+                    WebkitMaskRepeat: "no-repeat",
+                    maskRepeat: "no-repeat",
+                    WebkitMaskPosition: "top center",
+                    maskPosition: "top center",
                   }}
                 >
                   <p className="font-semibold text-foreground">{CHECK_LABELS[type]}</p>
