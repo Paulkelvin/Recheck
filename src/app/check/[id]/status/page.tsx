@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
 import { LinkButton } from "@/components/ui/button";
+import { PlanPreviewCard } from "@/components/plan-preview-card";
 
 const STEPS = [
   { key: "submitted", label: "Submitted" },
@@ -91,6 +92,8 @@ export default async function StatusPage({
           View your report
         </LinkButton>
       )}
+
+      <PlanPreviewCard reportId={id} />
     </div>
   );
 }

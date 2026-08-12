@@ -5,6 +5,7 @@ import {
   boolean,
   timestamp,
   numeric,
+  jsonb,
   pgEnum,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
@@ -55,6 +56,17 @@ export const findingResultEnum = pgEnum("finding_result", [
 
 export const listingStatusEnum = pgEnum("listing_status", ["active", "pending"]);
 
+// Free, pre-payment map preview built from the uploaded plan's beacon
+// coordinates -- see src/lib/plan-ocr.ts. "unavailable" means the automatic
+// read failed one of its plausibility checks, not that anything is wrong
+// with the report itself.
+export const planPreviewStatusEnum = pgEnum("plan_preview_status", [
+  "not_attempted",
+  "processing",
+  "available",
+  "unavailable",
+]);
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -93,6 +105,10 @@ export const landReports = pgTable("land_reports", {
   amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }),
   assignedSurveyorId: uuid("assigned_surveyor_id").references(() => users.id),
   previousReportId: uuid("previous_report_id").references((): AnyPgColumn => landReports.id),
+  planPreviewStatus: planPreviewStatusEnum("plan_preview_status").notNull().default("not_attempted"),
+  planPreviewReason: text("plan_preview_reason"),
+  planPreviewCoordinates: jsonb("plan_preview_coordinates").$type<{ lat: number; lng: number }[]>(),
+  planPreviewCheckedAt: timestamp("plan_preview_checked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

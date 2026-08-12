@@ -61,6 +61,7 @@ export function IntakeForm({
       }
 
       const { report } = await res.json();
+      fetch(`/api/land-reports/${report.id}/preview`, { method: "POST" }).catch(() => {});
       router.push(`/check/${report.id}/payment`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");

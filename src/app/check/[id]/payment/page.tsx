@@ -5,6 +5,7 @@ import { landReports } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { priceForReport } from "@/lib/report-tiers";
 import { PaymentStarter } from "./payment-starter";
+import { PlanPreviewCard } from "@/components/plan-preview-card";
 
 export default async function PaymentPage({
   params,
@@ -48,6 +49,9 @@ export default async function PaymentPage({
         We&apos;ll take you to a secure Paystack checkout.
       </p>
       <PaymentStarter reportId={id} />
+      <div className="w-full text-left">
+        <PlanPreviewCard reportId={id} />
+      </div>
     </div>
   );
 }
