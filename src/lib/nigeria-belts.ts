@@ -4,6 +4,15 @@ import proj4 from "proj4";
 // Real plans use one of two systems, and which one is in force is stated
 // on the plan itself (e.g. "ORIGIN:- U.T.M. (ZONE 31)") -- it should never
 // be inferred purely from which state the buyer typed into a form.
+// Product requirement, not just current reality: every system this app
+// understands MUST be Minna datum (Clarke 1880 modified ellipsoid,
+// a=6378249.145 rf=293.465 -- see BELT_PROJ4/UTM_PROJ4 below). Nigerian
+// cadastral plans are overwhelmingly still surveyed and drawn on Minna,
+// even when their coordinate labels don't say so explicitly. If a plan is
+// ever found stating a different datum (WGS84, e.g. from a GPS-based
+// survey), that is a decision for a human to make deliberately -- add a
+// new ProjectionSystem variant with its own explicit datum handling, don't
+// fold it into the existing Minna-only path or infer it silently.
 export type NigeriaBelt = "west" | "mid" | "east";
 export type UtmZone = 31 | 32;
 export type ProjectionSystem =

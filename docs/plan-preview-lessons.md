@@ -108,6 +108,17 @@ anchor point marks a gridline intersection, not the actual beacon. State
 this to users explicitly rather than let a preview look more precise than
 it is.
 
+## 7a. Hard requirement: Minna datum, always
+
+Product decision, stated explicitly: the system must always use Minna
+datum. Both `ProjectionSystem` variants (belt and UTM) are hardcoded to the
+Minna ellipsoid (Clarke 1880 modified, `a=6378249.145 rf=293.465`) with no
+other path — see the guard comment on `ProjectionSystem` in
+`nigeria-belts.ts`. If a plan ever surfaces stating a different datum
+(WGS84, from a GPS-based survey), that needs a deliberate new
+`ProjectionSystem` variant with its own explicit handling — never silently
+folded into the existing Minna-only conversion.
+
 ## 8. Fail-closed beats fail-open, always, in this domain
 
 Every gate in this pipeline (confidence threshold, closure tolerance, area
