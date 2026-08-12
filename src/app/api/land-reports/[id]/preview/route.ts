@@ -44,7 +44,7 @@ export async function GET(
 // step -- extractPlanPreview() only ever returns "available" when its own
 // plausibility checks pass, so there's nothing left for a human to gate.
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
@@ -57,7 +57,14 @@ export async function POST(
       return NextResponse.json({ error: "Not authorized for this action" }, { status: 403 });
     }
 
-    if (report.planPreviewStatus !== "not_attempted") {
+    // Admin-only diagnostics: ?force=1 re-runs the pipeline even if it's
+    // already settled, ?debug=1 includes the raw OCR text/parsed pairs in
+    // the response so a bad parse can be diagnosed without guessing.
+    const url = new URL(req.url);
+    const force = user.role === "admin" && url.searchParams.get("force") === "1";
+    const debug = user.role === "admin" && url.searchParams.get("debug") === "1";
+
+    if (report.planPreviewStatus !== "not_attempted" && !force) {
       return NextResponse.json({ status: report.planPreviewStatus });
     }
 
@@ -75,7 +82,7 @@ export async function POST(
       .set({ planPreviewStatus: "processing" })
       .where(eq(landReports.id, id));
 
-    const result = await extractPlanPreview(docUrl, report.state);
+    const result = await extractPlanPreview(docUrl, report.state, debug);
 
     if (result.status === "available") {
       await db
@@ -86,7 +93,11 @@ export async function POST(
           planPreviewCheckedAt: new Date(),
         })
         .where(eq(landReports.id, id));
-      return NextResponse.json({ status: "available", coordinates: result.coordinates });
+      return NextResponse.json({
+        status: "available",
+        coordinates: result.coordinates,
+        ...(debug ? { debug: result.debug } : {}),
+      });
     }
 
     await db
@@ -97,7 +108,11 @@ export async function POST(
         planPreviewCheckedAt: new Date(),
       })
       .where(eq(landReports.id, id));
-    return NextResponse.json({ status: "unavailable", reason: result.reason });
+    return NextResponse.json({
+      status: "unavailable",
+      reason: result.reason,
+      ...(debug ? { debug: result.debug } : {}),
+    });
   } catch (err) {
     if (err instanceof AccessError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

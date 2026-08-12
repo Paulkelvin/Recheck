@@ -8,8 +8,14 @@ import { beaconToLatLng, beltForState, type LatLng, type NigeriaBelt } from "./n
 // a visitor seeing their land in the wrong place is not.
 
 export type PlanOcrResult =
-  | { status: "available"; coordinates: LatLng[] }
-  | { status: "unavailable"; reason: string };
+  | { status: "available"; coordinates: LatLng[]; debug?: OcrDebugInfo }
+  | { status: "unavailable"; reason: string; debug?: OcrDebugInfo };
+
+type OcrDebugInfo = {
+  text: string;
+  avgConfidence: number | null;
+  pairs: Array<[number, number]>;
+};
 
 const MIN_CONFIDENCE = 0.6;
 const MIN_POINTS = 3;
@@ -150,6 +156,7 @@ function withinNigeria(points: LatLng[]): boolean {
 export async function extractPlanPreview(
   docUrl: string,
   state: string,
+  includeDebug = false,
 ): Promise<PlanOcrResult> {
   const apiKey = process.env.GOOGLE_VISION_API_KEY;
   if (!apiKey) {
@@ -170,24 +177,26 @@ export async function extractPlanPreview(
     return { status: "unavailable", reason: "ocr_failed" };
   }
 
+  const pairs = parseCoordinatePairs(text);
+  const debug = includeDebug ? { text, avgConfidence, pairs } : undefined;
+
   if (avgConfidence !== null && avgConfidence < MIN_CONFIDENCE) {
-    return { status: "unavailable", reason: "low_confidence" };
+    return { status: "unavailable", reason: "low_confidence", debug };
   }
 
-  const pairs = parseCoordinatePairs(text);
   if (pairs.length < MIN_POINTS) {
-    return { status: "unavailable", reason: "insufficient_coordinates" };
+    return { status: "unavailable", reason: "insufficient_coordinates", debug };
   }
 
   if (!withinPlausibleSpan(pairs)) {
-    return { status: "unavailable", reason: "implausible_coordinates" };
+    return { status: "unavailable", reason: "implausible_coordinates", debug };
   }
 
   const points = pairs.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
 
   if (!withinNigeria(points)) {
-    return { status: "unavailable", reason: "outside_nigeria" };
+    return { status: "unavailable", reason: "outside_nigeria", debug };
   }
 
-  return { status: "available", coordinates: points };
+  return { status: "available", coordinates: points, debug };
 }
