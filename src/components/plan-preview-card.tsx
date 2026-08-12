@@ -17,6 +17,7 @@ const REASON_MESSAGES: Record<string, string> = {
   insufficient_coordinates: "We couldn't find plot coordinates on this document.",
   implausible_coordinates: "The coordinates we found didn't look right, so we're not showing them.",
   outside_nigeria: "The coordinates we found didn't check out, so we're not showing them.",
+  traverse_did_not_close: "The plot boundary we calculated didn't add up, so we're not showing it.",
 };
 
 function unavailableMessage(reason: string | null): string {

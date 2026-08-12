@@ -16,6 +16,9 @@ type OcrDebugInfo = {
   avgConfidence: number | null;
   rows: string[][];
   pairs: Array<[number, number]>;
+  method?: "table" | "traverse";
+  legs?: Array<{ bearingDeg: number; distanceM: number }>;
+  closureErrorM?: number;
 };
 
 const MIN_CONFIDENCE = 0.6;
@@ -31,6 +34,26 @@ const MAX_SPAN_METERS = 3000;
 const NIGERIA_BOUNDS = { minLat: 4, maxLat: 14, minLng: 2.5, maxLng: 14.7 };
 
 const COORD_PATTERN = /^-?\d{4,7}\.\d{1,3}$|^-?\d{5,7}$/;
+
+// Most Nigerian survey plans don't list every beacon's absolute coordinate --
+// they give one starting beacon's Easting/Northing, then a "traverse": a
+// bearing + distance for each boundary leg, walking around back to the
+// start. Reconstructing the plot means real trigonometry, and a misread
+// digit or a wrong bearing convention produces a plausible-looking but
+// wrong-shaped polygon -- exactly the silent-wrong-answer risk this whole
+// pipeline exists to avoid. The closure check below (does the traverse
+// actually walk back to where it started?) is the real safety net, the same
+// check a surveyor uses to validate their own fieldwork.
+const QUADRANT_BEARING = /^([NS])(\d{1,2})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?([EW])$/i;
+const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?$/;
+const DISTANCE_PATTERN = /^(\d{1,4}(?:\.\d{1,3})?)m?$/i;
+const MAX_BEARING_TOKEN_SPAN = 4;
+// Closure tolerance: a real traverse should walk back to its starting
+// point. Allow up to 1% of the total perimeter or 2m, whichever is more
+// forgiving, to absorb ordinary OCR digit noise without accepting a
+// traverse that clearly doesn't close.
+const CLOSURE_TOLERANCE_RATIO = 0.01;
+const CLOSURE_TOLERANCE_MIN_M = 2;
 
 type OcrWord = { text: string; x: number; y: number; height: number };
 
@@ -185,6 +208,119 @@ function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
   return pairs;
 }
 
+function dmsToDecimalDegrees(deg: string, min?: string, sec?: string): number {
+  return Number(deg) + Number(min ?? 0) / 60 + Number(sec ?? 0) / 3600;
+}
+
+// Converts a quadrant bearing (e.g. N45°30'E) to a whole-circle bearing
+// (0-360, clockwise from North) -- the form the traverse math below needs.
+function quadrantToWholeCircle(letter1: string, angle: number, letter2: string): number | null {
+  const ns = letter1.toUpperCase();
+  const ew = letter2.toUpperCase();
+  if (angle < 0 || angle > 90) return null;
+  if (ns === "N" && ew === "E") return angle;
+  if (ns === "S" && ew === "E") return 180 - angle;
+  if (ns === "S" && ew === "W") return 180 + angle;
+  if (ns === "N" && ew === "W") return 360 - angle;
+  return null;
+}
+
+// Tries to read a bearing starting at row word index `start`, spanning up to
+// MAX_BEARING_TOKEN_SPAN consecutive words concatenated together (OCR may
+// split "N45°30'E" into several words at the symbol boundaries). Returns the
+// whole-circle bearing and how many words it consumed, or null.
+function matchBearingAt(rowTexts: string[], start: number): { bearingDeg: number; span: number } | null {
+  for (let span = 1; span <= MAX_BEARING_TOKEN_SPAN && start + span <= rowTexts.length; span++) {
+    const joined = rowTexts.slice(start, start + span).join("").replace(/\s+/g, "");
+
+    const quadrant = joined.match(QUADRANT_BEARING);
+    if (quadrant) {
+      const angle = dmsToDecimalDegrees(quadrant[2], quadrant[3], quadrant[4]);
+      const wcb = quadrantToWholeCircle(quadrant[1], angle, quadrant[5]);
+      if (wcb !== null) return { bearingDeg: wcb, span };
+    }
+
+    const wholeCircle = joined.match(WHOLE_CIRCLE_BEARING);
+    if (wholeCircle) {
+      const wcb = dmsToDecimalDegrees(wholeCircle[1], wholeCircle[2], wholeCircle[3]);
+      if (wcb >= 0 && wcb <= 360) return { bearingDeg: wcb, span };
+    }
+  }
+  return null;
+}
+
+// A row is a usable traverse leg only if it has exactly one identifiable
+// bearing and exactly one identifiable distance. A bare numeric label next
+// to them (a beacon numbered "2", say) would make it ambiguous which number
+// is the distance, so that's skipped rather than guessed at -- but an
+// alphanumeric label like "PB1" isn't itself a candidate distance, so it's
+// left alone.
+function legFromRow(row: OcrWord[]): { bearingDeg: number; distanceM: number } | null {
+  const texts = row.map((w) => w.text);
+  const bareNumber = /^\d+(\.\d+)?$/;
+
+  for (let i = 0; i < texts.length; i++) {
+    const bearing = matchBearingAt(texts, i);
+    if (!bearing) continue;
+
+    const remaining = [...texts.slice(0, i), ...texts.slice(i + bearing.span)];
+    const distanceMatches = remaining.filter((t) => DISTANCE_PATTERN.test(t));
+    const otherNumeric = remaining.filter(
+      (t) => !DISTANCE_PATTERN.test(t) && bareNumber.test(t),
+    );
+    if (otherNumeric.length > 0) continue;
+
+    // A bare integer sitting next to a decimal number is almost always a
+    // beacon label ("1", "2", ...) rather than the distance -- real
+    // traverse distances are conventionally recorded to decimal precision.
+    // Only fall back to a bare integer as the distance when it's the only
+    // number left.
+    const decimalDistances = distanceMatches.filter((t) => t.includes("."));
+    const candidates = decimalDistances.length > 0 ? decimalDistances : distanceMatches;
+
+    if (candidates.length === 1) {
+      const distanceM = Number(candidates[0].replace(/m$/i, ""));
+      if (Number.isFinite(distanceM) && distanceM > 0) {
+        return { bearingDeg: bearing.bearingDeg, distanceM };
+      }
+    }
+  }
+  return null;
+}
+
+function parseLegs(rows: OcrWord[][]): Array<{ bearingDeg: number; distanceM: number }> {
+  const legs: Array<{ bearingDeg: number; distanceM: number }> = [];
+  for (const row of rows) {
+    const leg = legFromRow(row);
+    if (leg) legs.push(leg);
+  }
+  return legs;
+}
+
+// Walks a traverse from a starting easting/northing through each leg's
+// bearing and distance. Returns every vertex including a final "closing"
+// point computed from the last leg -- that closing point should land back
+// on the start; how far off it lands is the closure error checked below.
+function walkTraverse(
+  start: [number, number],
+  legs: Array<{ bearingDeg: number; distanceM: number }>,
+): Array<[number, number]> {
+  const points: Array<[number, number]> = [start];
+  for (const leg of legs) {
+    const [easting, northing] = points[points.length - 1];
+    const rad = (leg.bearingDeg * Math.PI) / 180;
+    points.push([easting + leg.distanceM * Math.sin(rad), northing + leg.distanceM * Math.cos(rad)]);
+  }
+  return points;
+}
+
+function closureErrorMeters(
+  start: [number, number],
+  closingPoint: [number, number],
+): number {
+  return Math.hypot(closingPoint[0] - start[0], closingPoint[1] - start[1]);
+}
+
 function withinPlausibleSpan(pairs: Array<[number, number]>): boolean {
   const eastings = pairs.map((p) => p[0]);
   const northings = pairs.map((p) => p[1]);
@@ -230,27 +366,76 @@ export async function extractPlanPreview(
 
   const rows = groupIntoRows(words);
   const pairs = pairsFromRows(rows);
-  const debug = includeDebug
-    ? { words, avgConfidence, rows: rows.map((r) => r.map((w) => w.text)), pairs }
-    : undefined;
+  // Always fully populated internally; only decided whether to expose at
+  // each return via `includeDebug ? debugInfo : undefined`, so its shape
+  // never has to be reasoned about as partial.
+  const debugInfo: OcrDebugInfo = {
+    words,
+    avgConfidence,
+    rows: rows.map((r) => r.map((w) => w.text)),
+    pairs,
+  };
+  const debug = () => (includeDebug ? debugInfo : undefined);
 
   if (avgConfidence !== null && avgConfidence < MIN_CONFIDENCE) {
-    return { status: "unavailable", reason: "low_confidence", debug };
+    return { status: "unavailable", reason: "low_confidence", debug: debug() };
   }
 
-  if (pairs.length < MIN_POINTS) {
-    return { status: "unavailable", reason: "insufficient_coordinates", debug };
+  // Path A: a full beacon coordinate table (every corner's Easting/Northing
+  // listed directly) -- the simpler, more reliable case when it's there.
+  if (pairs.length >= MIN_POINTS) {
+    if (!withinPlausibleSpan(pairs)) {
+      return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
+    }
+
+    const points = pairs.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
+
+    if (!withinNigeria(points)) {
+      return { status: "unavailable", reason: "outside_nigeria", debug: debug() };
+    }
+
+    debugInfo.method = "table";
+    return { status: "available", coordinates: points, debug: debug() };
   }
 
-  if (!withinPlausibleSpan(pairs)) {
-    return { status: "unavailable", reason: "implausible_coordinates", debug };
+  // Path B: one starting beacon's coordinate plus a bearing/distance
+  // traverse for the rest -- the more common real-world case. Only attempt
+  // this when exactly one coordinate-shaped row was found; two or more
+  // without reaching MIN_POINTS is ambiguous (a broken table, not a clean
+  // single start point) and isn't worth guessing at.
+  if (pairs.length === 1) {
+    const legs = parseLegs(rows);
+    debugInfo.legs = legs;
+
+    if (legs.length < MIN_POINTS) {
+      return { status: "unavailable", reason: "insufficient_coordinates", debug: debug() };
+    }
+
+    const traverse = walkTraverse(pairs[0], legs);
+    const vertices = traverse.slice(0, -1); // exclude the computed closing point
+    const closingPoint = traverse[traverse.length - 1];
+    const closureError = closureErrorMeters(pairs[0], closingPoint);
+    const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
+    const tolerance = Math.max(CLOSURE_TOLERANCE_MIN_M, perimeter * CLOSURE_TOLERANCE_RATIO);
+    debugInfo.closureErrorM = closureError;
+
+    if (closureError > tolerance) {
+      return { status: "unavailable", reason: "traverse_did_not_close", debug: debug() };
+    }
+
+    if (!withinPlausibleSpan(vertices as Array<[number, number]>)) {
+      return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
+    }
+
+    const points = vertices.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
+
+    if (!withinNigeria(points)) {
+      return { status: "unavailable", reason: "outside_nigeria", debug: debug() };
+    }
+
+    debugInfo.method = "traverse";
+    return { status: "available", coordinates: points, debug: debug() };
   }
 
-  const points = pairs.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
-
-  if (!withinNigeria(points)) {
-    return { status: "unavailable", reason: "outside_nigeria", debug };
-  }
-
-  return { status: "available", coordinates: points, debug };
+  return { status: "unavailable", reason: "insufficient_coordinates", debug: debug() };
 }
