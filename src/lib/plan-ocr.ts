@@ -1,4 +1,10 @@
-import { beaconToLatLng, beltForState, type LatLng, type NigeriaBelt } from "./nigeria-belts";
+import {
+  pointToLatLng,
+  beltForState,
+  NIGERIA_STATE_NAMES,
+  type LatLng,
+  type ProjectionSystem,
+} from "./nigeria-belts";
 
 // Best-effort, fully automatic extraction of a plot's beacon coordinates from
 // an uploaded survey plan, for the free pre-payment map preview. No human
@@ -6,10 +12,18 @@ import { beaconToLatLng, beltForState, type LatLng, type NigeriaBelt } from "./n
 // silently wrong, and each one has a gate that fails closed into
 // "unavailable" instead of guessing. A visitor seeing no preview is fine;
 // a visitor seeing their land in the wrong place is not.
+//
+// The plan itself is the source of truth, not the buyer-typed intake form --
+// a garbled state field shouldn't block a perfectly readable plan, and a
+// plan's own printed "ORIGIN:" line is more reliable than guessing a
+// projection from a free-text state name. The form's state is only a
+// last-resort fallback when the plan doesn't say.
 
 export type PlanOcrResult =
   | { status: "available"; coordinates: LatLng[]; debug?: OcrDebugInfo }
   | { status: "unavailable"; reason: string; debug?: OcrDebugInfo };
+
+type LegCandidate = { bearingDeg: number; distanceM: number };
 
 type OcrDebugInfo = {
   words: OcrWord[];
@@ -17,12 +31,15 @@ type OcrDebugInfo = {
   rows: string[][];
   pairs: Array<[number, number]>;
   method?: "table" | "traverse";
-  legs?: Array<{ bearingDeg: number; distanceM: number }>;
+  legs?: LegCandidate[];
   closureErrorM?: number;
+  projection?: string;
+  areaCheck?: { statedM2: number; computedM2: number } | null;
 };
 
 const MIN_CONFIDENCE = 0.6;
 const MIN_POINTS = 3;
+const MAX_LEGS_FOR_PERMUTATION_SEARCH = 8;
 // A beacon table's easting/northing values should span a plausible plot --
 // too tight and it's probably noise, too wide and the parser likely grabbed
 // unrelated numbers (page numbers, plan numbers, scale ratios) off the page.
@@ -34,6 +51,8 @@ const MAX_SPAN_METERS = 3000;
 const NIGERIA_BOUNDS = { minLat: 4, maxLat: 14, minLng: 2.5, maxLng: 14.7 };
 
 const COORD_PATTERN = /^-?\d{4,7}\.\d{1,3}$|^-?\d{5,7}$/;
+const NORTHING_TOKEN = /^(\d{4,7}(?:\.\d{1,3})?)mN$/i;
+const EASTING_TOKEN = /^(\d{4,7}(?:\.\d{1,3})?)mE$/i;
 
 // Most Nigerian survey plans don't list every beacon's absolute coordinate --
 // they give one starting beacon's Easting/Northing, then a "traverse": a
@@ -46,14 +65,33 @@ const COORD_PATTERN = /^-?\d{4,7}\.\d{1,3}$|^-?\d{5,7}$/;
 // check a surveyor uses to validate their own fieldwork.
 const QUADRANT_BEARING = /^([NS])(\d{1,2})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?([EW])$/i;
 const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?$/;
-const DISTANCE_PATTERN = /^(\d{1,4}(?:\.\d{1,3})?)m?$/i;
+// A page-wide distance candidate requires a decimal point (an "m" suffix is
+// allowed but not required) -- real survey distances are conventionally
+// recorded to decimal precision, e.g. "18.24m" or "30.00", and requiring
+// the decimal point is what makes a page-wide search safe without row/table
+// context: a bare whole number (a scale-bar tick like "40m", a plan
+// reference) has none.
+const DISTANCE_CANDIDATE = /^\d{1,4}\.\d{1,3}m?$/i;
 const MAX_BEARING_TOKEN_SPAN = 4;
+// How close (px) two words' X positions need to be to belong to the same
+// rotated vertical label -- measured from real plans, columns of rotated
+// text land within a couple of pixels of each other.
+const VERTICAL_CLUSTER_X_TOLERANCE = 20;
+// Real rotated bearing labels span up to ~160px in Y between their degree
+// and minute fragments -- capping the allowed gap keeps an X-coincidental
+// but unrelated digit elsewhere on the page (a block number, a plan ref)
+// from being pulled into the same column.
+const VERTICAL_CLUSTER_MAX_Y_GAP = 220;
 // Closure tolerance: a real traverse should walk back to its starting
 // point. Allow up to 1% of the total perimeter or 2m, whichever is more
 // forgiving, to absorb ordinary OCR digit noise without accepting a
 // traverse that clearly doesn't close.
 const CLOSURE_TOLERANCE_RATIO = 0.01;
 const CLOSURE_TOLERANCE_MIN_M = 2;
+// Cross-check against a plan's own stated plot area, when OCR finds one --
+// allow generous slack since both the OCR'd area figure and the computed
+// polygon carry their own noise.
+const AREA_TOLERANCE_RATIO = 0.15;
 
 type OcrWord = { text: string; x: number; y: number; height: number };
 
@@ -67,7 +105,7 @@ async function fetchAsBase64(url: string): Promise<string> {
 async function runVisionOcr(
   docUrl: string,
   apiKey: string,
-): Promise<{ words: OcrWord[]; avgConfidence: number | null }> {
+): Promise<{ words: OcrWord[]; avgConfidence: number | null; fullText: string }> {
   const isPdf = docUrl.toLowerCase().includes(".pdf");
 
   if (isPdf) {
@@ -118,14 +156,17 @@ type VisionWord = {
 // Reconstructs each word's text and vertical position from Vision's
 // structured response, instead of using fullTextAnnotation.text -- Vision
 // inserts line breaks based on its own layout guess, which for a
-// widely-spaced table routinely puts one cell per "line" instead of one row
-// per line. Row reconstruction below uses actual word geometry instead.
+// widely-spaced table or a rotated label routinely scatters related content
+// across several "lines". Row/cluster reconstruction below uses actual word
+// geometry instead.
 function extractWordsAndConfidence(response: unknown): {
   words: OcrWord[];
   avgConfidence: number | null;
+  fullText: string;
 } {
   const r = response as {
     fullTextAnnotation?: {
+      text?: string;
       pages?: Array<{
         blocks?: Array<{ paragraphs?: Array<{ words?: VisionWord[] }> }>;
       }>;
@@ -163,7 +204,7 @@ function extractWordsAndConfidence(response: unknown): {
       ? confidences.reduce((a, b) => a + b, 0) / confidences.length
       : null;
 
-  return { words, avgConfidence };
+  return { words, avgConfidence, fullText: r?.fullTextAnnotation?.text ?? "" };
 }
 
 // Groups words into table rows by vertical position instead of Vision's text
@@ -192,11 +233,81 @@ function groupIntoRows(words: OcrWord[]): OcrWord[][] {
   return rows.map((row) => row.sort((a, b) => a.x - b.x));
 }
 
+// --- Projection detection: the plan's own text is authoritative -----------
+
+// Scans the plan's OCR text for its own stated coordinate system and state,
+// preferring that over the buyer-typed intake form. Falls back to the form's
+// state only when the plan doesn't say. Returns a human-readable label for
+// debugging and a note when the plan and form disagree (informational only
+// -- never blocks on a mismatch).
+function detectProjection(
+  fullText: string,
+  formState: string,
+): { system: ProjectionSystem; label: string; locationNote?: string } | null {
+  const upper = fullText.toUpperCase();
+  const mentionsUtm = /\bU\.?T\.?M\.?\b/.test(upper);
+
+  if (mentionsUtm) {
+    const zoneMatch = upper.match(/ZONE\s*(\d{1,2})/);
+    const zone = zoneMatch ? Number(zoneMatch[1]) : null;
+    if (zone === 31 || zone === 32) {
+      return { system: { type: "utm", zone }, label: `utm-zone-${zone}` };
+    }
+  }
+
+  const belt = /WEST\s+BELT/.test(upper)
+    ? "west"
+    : /MID\s+BELT/.test(upper)
+      ? "mid"
+      : /EAST\s+BELT/.test(upper)
+        ? "east"
+        : null;
+  if (belt) return { system: { type: "belt", belt }, label: `belt-${belt}` };
+
+  // The plan didn't state a system directly -- fall back to whichever
+  // Nigerian state name appears on the plan itself (its header almost always
+  // names the state), cross-checked against the form.
+  const planState = NIGERIA_STATE_NAMES.find((name) =>
+    new RegExp(`\\b${name.toUpperCase()}\\b`).test(upper),
+  );
+
+  const effectiveState = planState ?? formState;
+  const stateBelt = beltForState(effectiveState);
+  if (!stateBelt) return null;
+
+  const locationNote =
+    planState && formState && beltForState(formState) && beltForState(formState) !== stateBelt
+      ? `Plan appears to be in ${planState}, which differs from the state entered (${formState}). Used the plan's own state.`
+      : undefined;
+
+  return { system: { type: "belt", belt: stateBelt }, label: `belt-${stateBelt}`, locationNote };
+}
+
+// --- Start coordinate detection --------------------------------------------
+
+// Nigerian plans conventionally print the Northing and Easting of the
+// nearest grid intersection as separate margin labels (e.g. "715041.281mN"
+// along the top, "584652.633mE" along the side) rather than as one paired
+// row -- so this searches the whole page, not just one row, for exactly one
+// of each suffix.
+function findStartCoordinateGlobal(words: OcrWord[]): [number, number] | null {
+  const northings = words.filter((w) => NORTHING_TOKEN.test(w.text));
+  const eastings = words.filter((w) => EASTING_TOKEN.test(w.text));
+  if (northings.length !== 1 || eastings.length !== 1) return null;
+
+  const northing = Number(northings[0].text.match(NORTHING_TOKEN)![1]);
+  const easting = Number(eastings[0].text.match(EASTING_TOKEN)![1]);
+  if (!Number.isFinite(northing) || !Number.isFinite(easting)) return null;
+
+  return [easting, northing];
+}
+
 // Within each reconstructed row, a numeric token is a candidate beacon
 // coordinate. A row is only used if exactly two tokens in the whole row
 // match the coordinate pattern -- extra numbers (a beacon label like "12",
 // a third stray value) make the row ambiguous, so it's skipped rather than
-// guessed at.
+// guessed at. Fallback for plans that do list a beacon's coordinate as one
+// clean row, without the mN/mE suffix convention.
 function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
   const pairs: Array<[number, number]> = [];
   for (const row of rows) {
@@ -207,6 +318,8 @@ function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
   }
   return pairs;
 }
+
+// --- Bearing parsing ---------------------------------------------------
 
 function dmsToDecimalDegrees(deg: string, min?: string, sec?: string): number {
   return Number(deg) + Number(min ?? 0) / 60 + Number(sec ?? 0) / 3600;
@@ -225,86 +338,220 @@ function quadrantToWholeCircle(letter1: string, angle: number, letter2: string):
   return null;
 }
 
-// Tries to read a bearing starting at row word index `start`, spanning up to
-// MAX_BEARING_TOKEN_SPAN consecutive words concatenated together (OCR may
-// split "N45°30'E" into several words at the symbol boundaries). Returns the
-// whole-circle bearing and how many words it consumed, or null.
-function matchBearingAt(rowTexts: string[], start: number): { bearingDeg: number; span: number } | null {
-  for (let span = 1; span <= MAX_BEARING_TOKEN_SPAN && start + span <= rowTexts.length; span++) {
-    const joined = rowTexts.slice(start, start + span).join("").replace(/\s+/g, "");
-
-    const quadrant = joined.match(QUADRANT_BEARING);
-    if (quadrant) {
-      const angle = dmsToDecimalDegrees(quadrant[2], quadrant[3], quadrant[4]);
-      const wcb = quadrantToWholeCircle(quadrant[1], angle, quadrant[5]);
-      if (wcb !== null) return { bearingDeg: wcb, span };
-    }
-
-    const wholeCircle = joined.match(WHOLE_CIRCLE_BEARING);
-    if (wholeCircle) {
-      const wcb = dmsToDecimalDegrees(wholeCircle[1], wholeCircle[2], wholeCircle[3]);
-      if (wcb >= 0 && wcb <= 360) return { bearingDeg: wcb, span };
-    }
+function bearingFromString(text: string): number | null {
+  const quadrant = text.match(QUADRANT_BEARING);
+  if (quadrant) {
+    const angle = dmsToDecimalDegrees(quadrant[2], quadrant[3], quadrant[4]);
+    const wcb = quadrantToWholeCircle(quadrant[1], angle, quadrant[5]);
+    if (wcb !== null) return wcb;
+  }
+  const wholeCircle = text.match(WHOLE_CIRCLE_BEARING);
+  if (wholeCircle) {
+    const wcb = dmsToDecimalDegrees(wholeCircle[1], wholeCircle[2], wholeCircle[3]);
+    if (wcb >= 0 && wcb <= 360) return wcb;
   }
   return null;
 }
 
-// A row is a usable traverse leg only if it has exactly one identifiable
-// bearing and exactly one identifiable distance. A bare numeric label next
-// to them (a beacon numbered "2", say) would make it ambiguous which number
-// is the distance, so that's skipped rather than guessed at -- but an
-// alphanumeric label like "PB1" isn't itself a candidate distance, so it's
-// left alone.
-function legFromRow(row: OcrWord[]): { bearingDeg: number; distanceM: number } | null {
-  const texts = row.map((w) => w.text);
-  const bareNumber = /^\d+(\.\d+)?$/;
+type BearingCandidate = { bearingDeg: number; x: number; y: number; rowIndex?: number };
 
-  for (let i = 0; i < texts.length; i++) {
-    const bearing = matchBearingAt(texts, i);
-    if (!bearing) continue;
+// Case 1: a bearing whose fragments share one row -- horizontal labels
+// (typically the top/bottom sides of a plot) OCR this way. Scans each row
+// for up to MAX_BEARING_TOKEN_SPAN consecutive words joining into a valid
+// bearing (Vision may split "N45°30'E" at the symbol boundaries). Returns
+// which words it consumed so the vertical-column pass (below) doesn't
+// independently re-detect the same fragments -- two horizontally-adjacent
+// characters are often close enough in both X and Y to also look like a
+// rotated column, which would otherwise silently duplicate the bearing.
+// Tags each candidate with its row index so pairing (below) can prefer an
+// unambiguous same-row distance over a merely-nearest one.
+function bearingCandidatesFromRows(rows: OcrWord[][]): { candidates: BearingCandidate[]; consumed: Set<OcrWord> } {
+  const candidates: BearingCandidate[] = [];
+  const consumed = new Set<OcrWord>();
+  rows.forEach((row, rowIndex) => {
+    const texts = row.map((w) => w.text);
+    for (let i = 0; i < texts.length; i++) {
+      for (let span = 1; span <= MAX_BEARING_TOKEN_SPAN && i + span <= texts.length; span++) {
+        const joined = texts.slice(i, i + span).join("").replace(/\s+/g, "");
+        const deg = bearingFromString(joined);
+        if (deg !== null) {
+          const consumedWords = row.slice(i, i + span);
+          consumedWords.forEach((w) => consumed.add(w));
+          const x = consumedWords.reduce((s, w) => s + w.x, 0) / consumedWords.length;
+          const y = consumedWords.reduce((s, w) => s + w.y, 0) / consumedWords.length;
+          candidates.push({ bearingDeg: deg, x, y, rowIndex });
+          break;
+        }
+      }
+    }
+  });
+  return { candidates, consumed };
+}
 
-    const remaining = [...texts.slice(0, i), ...texts.slice(i + bearing.span)];
-    const distanceMatches = remaining.filter((t) => DISTANCE_PATTERN.test(t));
-    const otherNumeric = remaining.filter(
-      (t) => !DISTANCE_PATTERN.test(t) && bareNumber.test(t),
-    );
-    if (otherNumeric.length > 0) continue;
+// Case 2: a bearing rotated 90° in the source drawing (typically the left/
+// right sides of a plot) -- Vision reads it top-to-bottom, splitting the
+// degrees and minutes far apart in Y even though they share almost exactly
+// the same X (measured from real plans: within a couple of pixels). Groups
+// digit/symbol fragments into X-aligned columns and tries reading each
+// column both top-to-bottom and bottom-to-top, since a rotated label's true
+// reading direction isn't known in advance. Excludes anything the row-based
+// pass already used, and anything on an obvious scale-bar row.
+function bearingCandidatesFromVerticalColumns(
+  words: OcrWord[],
+  exclude: Set<OcrWord>,
+): BearingCandidate[] {
+  const fragmentPattern = /^\d{1,3}$/;
+  const symbolPattern = /^[°ºo'′"″]+$/;
+  const fragments = words.filter(
+    (w) => !exclude.has(w) && (fragmentPattern.test(w.text) || symbolPattern.test(w.text)),
+  );
 
-    // A bare integer sitting next to a decimal number is almost always a
-    // beacon label ("1", "2", ...) rather than the distance -- real
-    // traverse distances are conventionally recorded to decimal precision.
-    // Only fall back to a bare integer as the distance when it's the only
-    // number left.
-    const decimalDistances = distanceMatches.filter((t) => t.includes("."));
-    const candidates = decimalDistances.length > 0 ? decimalDistances : distanceMatches;
+  // Single-linkage clustering by Y: a fragment joins a column only if it's
+  // both X-aligned with AND within a plausible Y-gap of that column's
+  // nearest member -- X-alignment alone isn't enough, since an unrelated
+  // digit hundreds of pixels away elsewhere on the page (a plan number, a
+  // block number) can share the same X purely by coincidence.
+  const columns: OcrWord[][] = [];
+  for (const w of [...fragments].sort((a, b) => a.y - b.y)) {
+    const column = columns.find((c) => {
+      const nearest = c[c.length - 1];
+      return (
+        Math.abs(nearest.x - w.x) <= VERTICAL_CLUSTER_X_TOLERANCE &&
+        Math.abs(w.y - nearest.y) <= VERTICAL_CLUSTER_MAX_Y_GAP
+      );
+    });
+    if (column) column.push(w);
+    else columns.push([w]);
+  }
 
-    if (candidates.length === 1) {
-      const distanceM = Number(candidates[0].replace(/m$/i, ""));
-      if (Number.isFinite(distanceM) && distanceM > 0) {
-        return { bearingDeg: bearing.bearingDeg, distanceM };
+  const candidates: BearingCandidate[] = [];
+  for (const column of columns) {
+    if (column.length < 2) continue;
+    const sorted = [...column].sort((a, b) => a.y - b.y);
+    const forward = sorted.map((w) => w.text).join("");
+    const backward = [...sorted].reverse().map((w) => w.text).join("");
+
+    for (const candidate of [forward, backward]) {
+      const deg = bearingFromString(candidate);
+      if (deg !== null) {
+        const x = sorted.reduce((s, w) => s + w.x, 0) / sorted.length;
+        const y = sorted.reduce((s, w) => s + w.y, 0) / sorted.length;
+        candidates.push({ bearingDeg: deg, x, y });
+        break;
       }
     }
   }
-  return null;
+  return candidates;
 }
 
-function parseLegs(rows: OcrWord[][]): Array<{ bearingDeg: number; distanceM: number }> {
-  const legs: Array<{ bearingDeg: number; distanceM: number }> = [];
+// A plan's scale bar ("m10 5 0 10 20 30 40m") reads as a row of small
+// plain and "m"-suffixed numbers -- exactly the shape a real distance
+// candidate has. Its distinctive tell is the leading "m10"/"m5"-style tick
+// label (a bare "m" immediately followed by digits, not found in normal
+// distance or bearing text), so any row containing one is excluded wholesale
+// from both distance and bearing candidacy.
+function scaleBarWords(rows: OcrWord[][]): Set<OcrWord> {
+  const excluded = new Set<OcrWord>();
   for (const row of rows) {
-    const leg = legFromRow(row);
-    if (leg) legs.push(leg);
+    if (row.some((w) => /^m\d+(\.\d+)?$/i.test(w.text))) {
+      row.forEach((w) => excluded.add(w));
+    }
   }
+  return excluded;
+}
+
+type DistanceCandidate = { distanceM: number; x: number; y: number; rowIndex?: number };
+
+// Distances are searched for anywhere on the page, not row-restricted --
+// requiring a decimal point (see DISTANCE_CANDIDATE) is what keeps this
+// safe without row/table context. Each match is tagged with its row index
+// (when it belongs to one) so pairing (below) can prefer an unambiguous
+// same-row bearing over a merely-nearest one.
+function distanceCandidates(
+  words: OcrWord[],
+  rows: OcrWord[][],
+  exclude: Set<OcrWord>,
+): DistanceCandidate[] {
+  const rowIndexOf = new Map<OcrWord, number>();
+  rows.forEach((row, i) => row.forEach((w) => rowIndexOf.set(w, i)));
+
+  return words
+    .filter((w) => !exclude.has(w) && DISTANCE_CANDIDATE.test(w.text))
+    .map((w) => ({
+      distanceM: Number(w.text.replace(/m$/i, "")),
+      x: w.x,
+      y: w.y,
+      rowIndex: rowIndexOf.get(w),
+    }));
+}
+
+// Pairs bearings with distances in two passes. First: any row that holds
+// exactly one row-based bearing and exactly one distance is paired directly
+// -- unambiguous, and immune to the second pass's failure mode (see below).
+// Second, for whatever's left (typically the rotated/vertical-column
+// bearings, which by construction never share a row with their distance):
+// nearest not-yet-claimed distance by straight 2D pixel distance. Pure
+// nearest-neighbor alone can mispair a multi-word bearing (whose anchor is
+// the average position of several consumed words, and so can drift closer
+// to an adjacent row's distance than to its own) -- the same-row pass
+// avoids that failure mode wherever a row makes the pairing unambiguous. A
+// wrong pairing either way is still caught downstream by the closure check,
+// so this only needs to be a good heuristic, not a proof.
+function pairNearestLegs(
+  bearings: BearingCandidate[],
+  distances: DistanceCandidate[],
+): LegCandidate[] {
+  const legs: LegCandidate[] = [];
+  const usedBearings = new Set<BearingCandidate>();
+  const usedDistances = new Set<DistanceCandidate>();
+
+  const rowCounts = new Map<number, { bearings: BearingCandidate[]; distances: DistanceCandidate[] }>();
+  for (const b of bearings) {
+    if (b.rowIndex === undefined) continue;
+    const entry = rowCounts.get(b.rowIndex) ?? { bearings: [], distances: [] };
+    entry.bearings.push(b);
+    rowCounts.set(b.rowIndex, entry);
+  }
+  for (const d of distances) {
+    if (d.rowIndex === undefined) continue;
+    const entry = rowCounts.get(d.rowIndex) ?? { bearings: [], distances: [] };
+    entry.distances.push(d);
+    rowCounts.set(d.rowIndex, entry);
+  }
+  for (const { bearings: rowBearings, distances: rowDistances } of rowCounts.values()) {
+    if (rowBearings.length === 1 && rowDistances.length === 1) {
+      legs.push({ bearingDeg: rowBearings[0].bearingDeg, distanceM: rowDistances[0].distanceM });
+      usedBearings.add(rowBearings[0]);
+      usedDistances.add(rowDistances[0]);
+    }
+  }
+
+  const remaining = distances.filter((d) => !usedDistances.has(d));
+  for (const bearing of bearings) {
+    if (usedBearings.has(bearing) || remaining.length === 0) continue;
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    remaining.forEach((d, i) => {
+      const dist = Math.hypot(d.x - bearing.x, d.y - bearing.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    });
+    const [match] = remaining.splice(bestIdx, 1);
+    legs.push({ bearingDeg: bearing.bearingDeg, distanceM: match.distanceM });
+  }
+
   return legs;
 }
 
+// --- Traverse math ----------------------------------------------------
+
 // Walks a traverse from a starting easting/northing through each leg's
-// bearing and distance. Returns every vertex including a final "closing"
-// point computed from the last leg -- that closing point should land back
-// on the start; how far off it lands is the closure error checked below.
-function walkTraverse(
-  start: [number, number],
-  legs: Array<{ bearingDeg: number; distanceM: number }>,
-): Array<[number, number]> {
+// bearing and distance, in the given order. Returns every vertex including
+// a final "closing" point computed from the last leg -- that closing point
+// should land back on the start; how far off it lands is the closure error.
+function walkTraverse(start: [number, number], legs: LegCandidate[]): Array<[number, number]> {
   const points: Array<[number, number]> = [start];
   for (const leg of legs) {
     const [easting, northing] = points[points.length - 1];
@@ -314,12 +561,85 @@ function walkTraverse(
   return points;
 }
 
-function closureErrorMeters(
-  start: [number, number],
-  closingPoint: [number, number],
-): number {
+function closureErrorMeters(start: [number, number], closingPoint: [number, number]): number {
   return Math.hypot(closingPoint[0] - start[0], closingPoint[1] - start[1]);
 }
+
+function polygonAreaM2(points: Array<[number, number]>): number {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(sum) / 2;
+}
+
+function factorial(n: number): number {
+  let result = 1;
+  for (let i = 2; i <= n; i++) result *= i;
+  return result;
+}
+
+function* permutations<T>(items: T[]): Generator<T[]> {
+  if (items.length <= 1) {
+    yield items;
+    return;
+  }
+  for (let i = 0; i < items.length; i++) {
+    const rest = [...items.slice(0, i), ...items.slice(i + 1)];
+    for (const perm of permutations(rest)) {
+      yield [items[i], ...perm];
+    }
+  }
+}
+
+// The order legs were found in (page reading order) has no reliable
+// relationship to the order they actually connect around the boundary --
+// annotations are scattered around a drawing, not listed sequentially. So
+// instead of guessing an order, every permutation (up to a sane cap) is
+// walked. Closure error alone isn't a safe tiebreaker: with near-cardinal
+// bearings (east/west/south/north-ish, common on rectangular plots) more
+// than one ordering can retrace its own path back close to the start
+// without ever tracing the actual boundary -- a degenerate near-zero-area
+// "bowtie" that closes about as well as the real rectangle does. Among
+// every ordering that closes within a generous multiple of tolerance, the
+// one enclosing the LARGEST area is kept, since a coincidentally-closing
+// degenerate path has a much smaller area than the true shape. The real
+// (tighter) closure tolerance is still enforced by the caller afterward.
+function bestClosingOrder(
+  start: [number, number],
+  legs: LegCandidate[],
+): { order: LegCandidate[]; closureError: number; points: Array<[number, number]> } | null {
+  if (legs.length > MAX_LEGS_FOR_PERMUTATION_SEARCH || factorial(legs.length) === 0) return null;
+
+  const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
+  const searchTolerance = Math.max(CLOSURE_TOLERANCE_MIN_M, perimeter * CLOSURE_TOLERANCE_RATIO) * 3;
+
+  let smallestError: { order: LegCandidate[]; closureError: number; points: Array<[number, number]> } | null = null;
+  let largestPlausible: { order: LegCandidate[]; closureError: number; points: Array<[number, number]>; area: number } | null = null;
+
+  for (const order of permutations(legs)) {
+    const traverse = walkTraverse(start, order);
+    const closureError = closureErrorMeters(start, traverse[traverse.length - 1]);
+    const points = traverse.slice(0, -1);
+
+    if (!smallestError || closureError < smallestError.closureError) {
+      smallestError = { order, closureError, points };
+    }
+
+    if (closureError <= searchTolerance) {
+      const area = polygonAreaM2(points);
+      if (!largestPlausible || area > largestPlausible.area) {
+        largestPlausible = { order, closureError, points, area };
+      }
+    }
+  }
+
+  return largestPlausible ?? smallestError;
+}
+
+// --- Plausibility gates -------------------------------------------------
 
 function withinPlausibleSpan(pairs: Array<[number, number]>): boolean {
   const eastings = pairs.map((p) => p[0]);
@@ -340,6 +660,23 @@ function withinNigeria(points: LatLng[]): boolean {
   );
 }
 
+// Cross-checks against a plan's own stated plot area when OCR finds one
+// (e.g. "PLOT AREA:- 668.791 SQR.MTS"). Only used as a hard gate when a
+// stated area was actually found; absence of one isn't itself suspicious.
+function areaMismatch(fullText: string, points: Array<[number, number]>): { statedM2: number; computedM2: number } | null {
+  const match = fullText.match(/PLOT\s*AREA[:\-\s]*-?\s*(\d{2,7}(?:\.\d{1,3})?)/i);
+  if (!match) return null;
+  const statedM2 = Number(match[1]);
+  if (!Number.isFinite(statedM2) || statedM2 <= 0) return null;
+  const computedM2 = polygonAreaM2(points);
+  return { statedM2, computedM2 };
+}
+
+function areaWithinTolerance(check: { statedM2: number; computedM2: number }): boolean {
+  const diff = Math.abs(check.statedM2 - check.computedM2);
+  return diff <= check.statedM2 * AREA_TOLERANCE_RATIO;
+}
+
 export async function extractPlanPreview(
   docUrl: string,
   state: string,
@@ -350,30 +687,32 @@ export async function extractPlanPreview(
     return { status: "unavailable", reason: "not_configured" };
   }
 
-  const belt: NigeriaBelt | null = beltForState(state);
-  if (!belt) {
-    return { status: "unavailable", reason: "unknown_belt" };
-  }
-
   let words: OcrWord[];
   let avgConfidence: number | null;
+  let fullText: string;
   try {
-    ({ words, avgConfidence } = await runVisionOcr(docUrl, apiKey));
+    ({ words, avgConfidence, fullText } = await runVisionOcr(docUrl, apiKey));
   } catch (err) {
     console.error("[plan-ocr] Vision API call failed:", err);
     return { status: "unavailable", reason: "ocr_failed" };
   }
 
+  const projection = detectProjection(fullText, state);
+  if (!projection) {
+    return { status: "unavailable", reason: "unknown_belt" };
+  }
+  const { system } = projection;
+
   const rows = groupIntoRows(words);
   const pairs = pairsFromRows(rows);
   // Always fully populated internally; only decided whether to expose at
-  // each return via `includeDebug ? debugInfo : undefined`, so its shape
-  // never has to be reasoned about as partial.
+  // each return via `includeDebug ? debugInfo : undefined`.
   const debugInfo: OcrDebugInfo = {
     words,
     avgConfidence,
     rows: rows.map((r) => r.map((w) => w.text)),
     pairs,
+    projection: projection.label,
   };
   const debug = () => (includeDebug ? debugInfo : undefined);
 
@@ -388,7 +727,7 @@ export async function extractPlanPreview(
       return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
     }
 
-    const points = pairs.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
+    const points = pairs.map(([easting, northing]) => pointToLatLng(easting, northing, system));
 
     if (!withinNigeria(points)) {
       return { status: "unavailable", reason: "outside_nigeria", debug: debug() };
@@ -399,35 +738,45 @@ export async function extractPlanPreview(
   }
 
   // Path B: one starting beacon's coordinate plus a bearing/distance
-  // traverse for the rest -- the more common real-world case. Only attempt
-  // this when exactly one coordinate-shaped row was found; two or more
-  // without reaching MIN_POINTS is ambiguous (a broken table, not a clean
-  // single start point) and isn't worth guessing at.
-  if (pairs.length === 1) {
-    const legs = parseLegs(rows);
+  // traverse for the rest -- the more common real-world case.
+  const start = findStartCoordinateGlobal(words) ?? (pairs.length === 1 ? pairs[0] : null);
+  if (start) {
+    const scaleBar = scaleBarWords(rows);
+    const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
+    const excludedFromColumns = new Set([...scaleBar, ...consumed]);
+    const bearings = [...rowBearings, ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns)];
+    const distances = distanceCandidates(words, rows, scaleBar);
+    const legs = pairNearestLegs(bearings, distances);
     debugInfo.legs = legs;
 
     if (legs.length < MIN_POINTS) {
       return { status: "unavailable", reason: "insufficient_coordinates", debug: debug() };
     }
 
-    const traverse = walkTraverse(pairs[0], legs);
-    const vertices = traverse.slice(0, -1); // exclude the computed closing point
-    const closingPoint = traverse[traverse.length - 1];
-    const closureError = closureErrorMeters(pairs[0], closingPoint);
+    const best = bestClosingOrder(start, legs);
+    if (!best) {
+      return { status: "unavailable", reason: "too_many_legs", debug: debug() };
+    }
+
     const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
     const tolerance = Math.max(CLOSURE_TOLERANCE_MIN_M, perimeter * CLOSURE_TOLERANCE_RATIO);
-    debugInfo.closureErrorM = closureError;
+    debugInfo.closureErrorM = best.closureError;
 
-    if (closureError > tolerance) {
+    if (best.closureError > tolerance) {
       return { status: "unavailable", reason: "traverse_did_not_close", debug: debug() };
     }
 
-    if (!withinPlausibleSpan(vertices as Array<[number, number]>)) {
+    if (!withinPlausibleSpan(best.points)) {
       return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
     }
 
-    const points = vertices.map(([easting, northing]) => beaconToLatLng(easting, northing, belt));
+    const areaCheck = areaMismatch(fullText, best.points);
+    debugInfo.areaCheck = areaCheck;
+    if (areaCheck && !areaWithinTolerance(areaCheck)) {
+      return { status: "unavailable", reason: "area_mismatch", debug: debug() };
+    }
+
+    const points = best.points.map(([easting, northing]) => pointToLatLng(easting, northing, system));
 
     if (!withinNigeria(points)) {
       return { status: "unavailable", reason: "outside_nigeria", debug: debug() };

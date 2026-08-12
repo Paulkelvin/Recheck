@@ -18,6 +18,8 @@ const REASON_MESSAGES: Record<string, string> = {
   implausible_coordinates: "The coordinates we found didn't look right, so we're not showing them.",
   outside_nigeria: "The coordinates we found didn't check out, so we're not showing them.",
   traverse_did_not_close: "The plot boundary we calculated didn't add up, so we're not showing it.",
+  area_mismatch: "The area we calculated didn't match what's on the plan, so we're not showing it.",
+  too_many_legs: "This plan has more boundary points than we can automatically check.",
 };
 
 function unavailableMessage(reason: string | null): string {
