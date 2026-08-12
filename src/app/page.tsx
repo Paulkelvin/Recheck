@@ -71,8 +71,8 @@ export default function Home() {
                 href="/check"
                 className="group relative mx-auto flex w-full max-w-xs flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-9 pt-14 text-center shadow-sm transition-shadow hover:shadow-md sm:max-w-none"
               >
-                <span className="absolute -top-7 flex h-14 w-14 items-center justify-center">
-                  <Icon className="h-10 w-10 text-brand" />
+                <span className="absolute -top-8 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand/10 ring-8 ring-background">
+                  <Icon className="h-8 w-8 text-brand" />
                 </span>
                 <p className="font-semibold text-foreground">{CHECK_LABELS[type]}</p>
                 <p className="mt-2 text-sm text-muted">{CHECK_DESCRIPTIONS[type]}</p>
