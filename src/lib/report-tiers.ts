@@ -53,6 +53,15 @@ export const CHECK_LABELS: Record<CheckType, string> = {
   encumbrance: "Does this land have hidden debt or court cases?",
 };
 
+export const CHECK_DESCRIPTIONS: Record<CheckType, string> = {
+  plan_authenticity: "We confirm the survey plan matches official records, not a forged copy.",
+  overlap: "We check the plan hasn't already been sold or allocated to someone else.",
+  acquisition: "We check if the government has already acquired or earmarked this land.",
+  dispute: "We check for family, community, or ownership disputes tied to the land.",
+  size: "We confirm the plot boundaries match what you're actually paying for.",
+  encumbrance: "We check for hidden loans, liens, or court cases tied to the land.",
+};
+
 // Fixed display order regardless of what order findings were saved in.
 export const CHECK_ORDER: CheckType[] = [
   "plan_authenticity",
