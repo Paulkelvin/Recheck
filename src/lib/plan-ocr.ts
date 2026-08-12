@@ -1,7 +1,7 @@
 import {
   pointToLatLng,
   beltForState,
-  NIGERIA_STATE_NAMES,
+  findStateInText,
   type LatLng,
   type ProjectionSystem,
 } from "./nigeria-belts";
@@ -20,8 +20,8 @@ import {
 // last-resort fallback when the plan doesn't say.
 
 export type PlanOcrResult =
-  | { status: "available"; coordinates: LatLng[]; debug?: OcrDebugInfo }
-  | { status: "unavailable"; reason: string; debug?: OcrDebugInfo };
+  | { status: "available"; coordinates: LatLng[]; note?: string; debug?: OcrDebugInfo }
+  | { status: "unavailable"; reason: string; note?: string; debug?: OcrDebugInfo };
 
 type LegCandidate = { bearingDeg: number; distanceM: number };
 
@@ -235,15 +235,13 @@ function groupIntoRows(words: OcrWord[]): OcrWord[][] {
 
 // --- Projection detection: the plan's own text is authoritative -----------
 
-// Scans the plan's OCR text for its own stated coordinate system and state,
-// preferring that over the buyer-typed intake form. Falls back to the form's
-// state only when the plan doesn't say. Returns a human-readable label for
-// debugging and a note when the plan and form disagree (informational only
-// -- never blocks on a mismatch).
+// Scans the plan's OCR text for its own stated coordinate system, preferring
+// that over anything inferred from the buyer-typed intake form. Falls back to
+// the state named on the plan, and only then to the form's state.
 function detectProjection(
   fullText: string,
   formState: string,
-): { system: ProjectionSystem; label: string; locationNote?: string } | null {
+): { system: ProjectionSystem; label: string } | null {
   const upper = fullText.toUpperCase();
   const mentionsUtm = /\bU\.?T\.?M\.?\b/.test(upper);
 
@@ -266,21 +264,34 @@ function detectProjection(
 
   // The plan didn't state a system directly -- fall back to whichever
   // Nigerian state name appears on the plan itself (its header almost always
-  // names the state), cross-checked against the form.
-  const planState = NIGERIA_STATE_NAMES.find((name) =>
-    new RegExp(`\\b${name.toUpperCase()}\\b`).test(upper),
-  );
-
-  const effectiveState = planState ?? formState;
+  // names the state), and only then to the buyer's form field.
+  const effectiveState = findStateInText(fullText) ?? formState;
   const stateBelt = beltForState(effectiveState);
   if (!stateBelt) return null;
 
-  const locationNote =
-    planState && formState && beltForState(formState) && beltForState(formState) !== stateBelt
-      ? `Plan appears to be in ${planState}, which differs from the state entered (${formState}). Used the plan's own state.`
-      : undefined;
+  return { system: { type: "belt", belt: stateBelt }, label: `belt-${stateBelt}` };
+}
 
-  return { system: { type: "belt", belt: stateBelt }, label: `belt-${stateBelt}`, locationNote };
+function titleCase(value: string): string {
+  return value.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Tells the buyer when the plan disagrees with what they typed. Deliberately
+// computed independently of which projection branch was taken above -- the
+// discrepancy matters just as much on a plan that states its own UTM zone as
+// on one we had to infer a belt for. Purely informational: the preview is
+// still shown, since the plan is the document of record and a fumbled form
+// field is not a reason to withhold a correct result.
+function locationDiscrepancyNote(fullText: string, formState: string): string | undefined {
+  const planState = findStateInText(fullText);
+  if (!planState) return undefined;
+
+  const typed = formState.trim().toLowerCase();
+  // Nothing meaningful to compare against if the buyer's entry isn't a
+  // recognizable state in the first place.
+  if (!beltForState(typed) || typed === planState) return undefined;
+
+  return `This plan says it's in ${titleCase(planState)} State, but ${titleCase(typed)} was entered on the form. The map below follows the plan.`;
 }
 
 // --- Start coordinate detection --------------------------------------------
@@ -575,12 +586,6 @@ function polygonAreaM2(points: Array<[number, number]>): number {
   return Math.abs(sum) / 2;
 }
 
-function factorial(n: number): number {
-  let result = 1;
-  for (let i = 2; i <= n; i++) result *= i;
-  return result;
-}
-
 function* permutations<T>(items: T[]): Generator<T[]> {
   if (items.length <= 1) {
     yield items;
@@ -611,7 +616,7 @@ function bestClosingOrder(
   start: [number, number],
   legs: LegCandidate[],
 ): { order: LegCandidate[]; closureError: number; points: Array<[number, number]> } | null {
-  if (legs.length > MAX_LEGS_FOR_PERMUTATION_SEARCH || factorial(legs.length) === 0) return null;
+  if (legs.length > MAX_LEGS_FOR_PERMUTATION_SEARCH) return null;
 
   const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
   const searchTolerance = Math.max(CLOSURE_TOLERANCE_MIN_M, perimeter * CLOSURE_TOLERANCE_RATIO) * 3;
@@ -716,25 +721,41 @@ export async function extractPlanPreview(
   };
   const debug = () => (includeDebug ? debugInfo : undefined);
 
+  // Built once and attached by the helpers below, so no return path can
+  // silently drop the buyer-facing discrepancy warning.
+  const note = locationDiscrepancyNote(fullText, state);
+  const unavailable = (reason: string): PlanOcrResult => ({
+    status: "unavailable",
+    reason,
+    note,
+    debug: debug(),
+  });
+  const available = (coordinates: LatLng[]): PlanOcrResult => ({
+    status: "available",
+    coordinates,
+    note,
+    debug: debug(),
+  });
+
   if (avgConfidence !== null && avgConfidence < MIN_CONFIDENCE) {
-    return { status: "unavailable", reason: "low_confidence", debug: debug() };
+    return unavailable("low_confidence");
   }
 
   // Path A: a full beacon coordinate table (every corner's Easting/Northing
   // listed directly) -- the simpler, more reliable case when it's there.
   if (pairs.length >= MIN_POINTS) {
     if (!withinPlausibleSpan(pairs)) {
-      return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
+      return unavailable("implausible_coordinates");
     }
 
     const points = pairs.map(([easting, northing]) => pointToLatLng(easting, northing, system));
 
     if (!withinNigeria(points)) {
-      return { status: "unavailable", reason: "outside_nigeria", debug: debug() };
+      return unavailable("outside_nigeria");
     }
 
     debugInfo.method = "table";
-    return { status: "available", coordinates: points, debug: debug() };
+    return available(points);
   }
 
   // Path B: one starting beacon's coordinate plus a bearing/distance
@@ -750,12 +771,12 @@ export async function extractPlanPreview(
     debugInfo.legs = legs;
 
     if (legs.length < MIN_POINTS) {
-      return { status: "unavailable", reason: "insufficient_coordinates", debug: debug() };
+      return unavailable("insufficient_coordinates");
     }
 
     const best = bestClosingOrder(start, legs);
     if (!best) {
-      return { status: "unavailable", reason: "too_many_legs", debug: debug() };
+      return unavailable("too_many_legs");
     }
 
     const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
@@ -763,28 +784,28 @@ export async function extractPlanPreview(
     debugInfo.closureErrorM = best.closureError;
 
     if (best.closureError > tolerance) {
-      return { status: "unavailable", reason: "traverse_did_not_close", debug: debug() };
+      return unavailable("traverse_did_not_close");
     }
 
     if (!withinPlausibleSpan(best.points)) {
-      return { status: "unavailable", reason: "implausible_coordinates", debug: debug() };
+      return unavailable("implausible_coordinates");
     }
 
     const areaCheck = areaMismatch(fullText, best.points);
     debugInfo.areaCheck = areaCheck;
     if (areaCheck && !areaWithinTolerance(areaCheck)) {
-      return { status: "unavailable", reason: "area_mismatch", debug: debug() };
+      return unavailable("area_mismatch");
     }
 
     const points = best.points.map(([easting, northing]) => pointToLatLng(easting, northing, system));
 
     if (!withinNigeria(points)) {
-      return { status: "unavailable", reason: "outside_nigeria", debug: debug() };
+      return unavailable("outside_nigeria");
     }
 
     debugInfo.method = "traverse";
-    return { status: "available", coordinates: points, debug: debug() };
+    return available(points);
   }
 
-  return { status: "unavailable", reason: "insufficient_coordinates", debug: debug() };
+  return unavailable("insufficient_coordinates");
 }

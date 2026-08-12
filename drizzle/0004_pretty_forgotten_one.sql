@@ -1,0 +1,1 @@
+ALTER TABLE "land_reports" ADD COLUMN "plan_preview_note" text;

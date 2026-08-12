@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
 import { requireRole, AccessError } from "@/lib/access-control";
@@ -29,6 +29,7 @@ export async function GET(
     return NextResponse.json({
       status: report.planPreviewStatus,
       reason: report.planPreviewReason,
+      note: report.planPreviewNote,
       coordinates: report.planPreviewCoordinates,
     });
   } catch (err) {
@@ -58,61 +59,102 @@ export async function POST(
     }
 
     // Admin-only diagnostics: ?force=1 re-runs the pipeline even if it's
-    // already settled, ?debug=1 includes the raw OCR text/parsed pairs in
+    // already settled, ?debug=1 includes the raw OCR words/parsed legs in
     // the response so a bad parse can be diagnosed without guessing.
     const url = new URL(req.url);
     const force = user.role === "admin" && url.searchParams.get("force") === "1";
     const debug = user.role === "admin" && url.searchParams.get("debug") === "1";
 
-    if (report.planPreviewStatus !== "not_attempted" && !force) {
-      return NextResponse.json({ status: report.planPreviewStatus });
-    }
-
     const docUrl = report.uploadedDocs[0];
     if (!docUrl) {
       await db
         .update(landReports)
-        .set({ planPreviewStatus: "unavailable", planPreviewReason: "no_document" })
+        .set({
+          planPreviewStatus: "unavailable",
+          planPreviewReason: "no_document",
+          planPreviewCheckedAt: new Date(),
+        })
         .where(eq(landReports.id, id));
       return NextResponse.json({ status: "unavailable", reason: "no_document" });
     }
 
-    await db
+    // Claim the job atomically. Vision API calls cost money and the client
+    // can legitimately trigger this from more than one place (the intake
+    // form fires it, and the preview card re-fires it for reports that
+    // never got one -- re-checks, or a failed fire-and-forget), so a
+    // read-then-write guard would let two callers both start the same run.
+    // Only the caller that actually flips not_attempted -> processing
+    // proceeds; everyone else just reports current state.
+    const [claimed] = await db
       .update(landReports)
       .set({ planPreviewStatus: "processing" })
-      .where(eq(landReports.id, id));
+      .where(
+        force
+          ? eq(landReports.id, id)
+          : and(eq(landReports.id, id), eq(landReports.planPreviewStatus, "not_attempted")),
+      )
+      .returning();
 
-    const result = await extractPlanPreview(docUrl, report.state, debug);
+    if (!claimed) {
+      return NextResponse.json({
+        status: report.planPreviewStatus,
+        reason: report.planPreviewReason,
+        note: report.planPreviewNote,
+      });
+    }
 
-    if (result.status === "available") {
+    // Anything unexpected past this point has to land the row in a terminal
+    // state before returning -- a row stuck on "processing" would leave the
+    // client polling for a result that is never coming.
+    try {
+      const result = await extractPlanPreview(docUrl, report.state, debug);
+
+      if (result.status === "available") {
+        await db
+          .update(landReports)
+          .set({
+            planPreviewStatus: "available",
+            planPreviewCoordinates: result.coordinates,
+            planPreviewReason: null,
+            planPreviewNote: result.note ?? null,
+            planPreviewCheckedAt: new Date(),
+          })
+          .where(eq(landReports.id, id));
+        return NextResponse.json({
+          status: "available",
+          coordinates: result.coordinates,
+          note: result.note ?? null,
+          ...(debug ? { debug: result.debug } : {}),
+        });
+      }
+
       await db
         .update(landReports)
         .set({
-          planPreviewStatus: "available",
-          planPreviewCoordinates: result.coordinates,
+          planPreviewStatus: "unavailable",
+          planPreviewReason: result.reason,
+          planPreviewNote: result.note ?? null,
           planPreviewCheckedAt: new Date(),
         })
         .where(eq(landReports.id, id));
       return NextResponse.json({
-        status: "available",
-        coordinates: result.coordinates,
+        status: "unavailable",
+        reason: result.reason,
+        note: result.note ?? null,
         ...(debug ? { debug: result.debug } : {}),
       });
+    } catch (err) {
+      console.error("[preview] extraction failed unexpectedly:", err);
+      await db
+        .update(landReports)
+        .set({
+          planPreviewStatus: "unavailable",
+          planPreviewReason: "unexpected_error",
+          planPreviewCheckedAt: new Date(),
+        })
+        .where(eq(landReports.id, id));
+      return NextResponse.json({ status: "unavailable", reason: "unexpected_error" });
     }
-
-    await db
-      .update(landReports)
-      .set({
-        planPreviewStatus: "unavailable",
-        planPreviewReason: result.reason,
-        planPreviewCheckedAt: new Date(),
-      })
-      .where(eq(landReports.id, id));
-    return NextResponse.json({
-      status: "unavailable",
-      reason: result.reason,
-      ...(debug ? { debug: result.debug } : {}),
-    });
   } catch (err) {
     if (err instanceof AccessError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

@@ -81,14 +81,26 @@ const STATE_BELT: Record<string, NigeriaBelt> = {
   yobe: "east",
 };
 
-// Every Nigerian state name (+ FCT), for scanning a plan's own OCR text to
-// find which state it says it's in -- preferred over the buyer-typed form
-// field, since the form is free text and the plan is the source of truth.
-export const NIGERIA_STATE_NAMES = [...Object.keys(STATE_BELT), "fct", "abuja"];
+// Longest names first so a multi-word state ("cross river") is matched
+// before any shorter name that might overlap it.
+const STATE_NAMES_BY_SPECIFICITY = Object.keys(STATE_BELT).sort((a, b) => b.length - a.length);
 
 export function beltForState(state: string): NigeriaBelt | null {
   const key = state.trim().toLowerCase();
   return STATE_BELT[key] ?? null;
+}
+
+// Finds which Nigerian state a plan's own text says it's in. Preferred over
+// the buyer-typed form field -- the form is free text a buyer can fumble,
+// the plan is the document of record. Word-boundary matched so "NIGER"
+// doesn't match inside "NIGERIA".
+export function findStateInText(text: string): string | null {
+  const upper = text.toUpperCase();
+  return (
+    STATE_NAMES_BY_SPECIFICITY.find((name) =>
+      new RegExp(`\\b${name.toUpperCase()}\\b`).test(upper),
+    ) ?? null
+  );
 }
 
 export type LatLng = { lat: number; lng: number };

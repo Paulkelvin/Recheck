@@ -107,6 +107,10 @@ export const landReports = pgTable("land_reports", {
   previousReportId: uuid("previous_report_id").references((): AnyPgColumn => landReports.id),
   planPreviewStatus: planPreviewStatusEnum("plan_preview_status").notNull().default("not_attempted"),
   planPreviewReason: text("plan_preview_reason"),
+  // Free-text caveat shown alongside the preview -- e.g. the plan says it's
+  // in a different state than the buyer typed. Informational, never a
+  // reason to withhold the preview.
+  planPreviewNote: text("plan_preview_note"),
   planPreviewCoordinates: jsonb("plan_preview_coordinates").$type<{ lat: number; lng: number }[]>(),
   planPreviewCheckedAt: timestamp("plan_preview_checked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

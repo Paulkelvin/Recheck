@@ -8,6 +8,7 @@ import { sendWhatsAppTemplate } from "@/lib/whatsapp";
 import { sendSms } from "@/lib/sms";
 
 const ALL_CHECK_TYPES = findingCheckTypeEnum.enumValues;
+const ALL_RESULTS = ["pass", "fail", "flagged", "inconclusive"] as const;
 
 export async function GET(
   _req: NextRequest,
@@ -71,6 +72,14 @@ export async function PUT(
 
     if (!checkType || !ALL_CHECK_TYPES.includes(checkType)) {
       return NextResponse.json({ error: "Valid checkType is required" }, { status: 400 });
+    }
+    // Unvalidated, this reaches the column's enum and comes back as a 500
+    // instead of a useful error.
+    if (result !== undefined && !ALL_RESULTS.includes(result)) {
+      return NextResponse.json(
+        { error: `result must be one of: ${ALL_RESULTS.join(", ")}` },
+        { status: 400 },
+      );
     }
 
     const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
