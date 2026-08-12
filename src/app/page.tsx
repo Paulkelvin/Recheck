@@ -69,16 +69,28 @@ export default function Home() {
               <Link
                 key={type}
                 href="/check"
-                className="group relative mx-auto flex w-full max-w-xs flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-9 pt-14 text-center shadow-sm transition-shadow hover:shadow-md sm:max-w-none"
+                className="group relative mx-auto flex w-full max-w-xs flex-col items-center text-center sm:max-w-none"
               >
-                <span className="absolute -top-8 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand/10 ring-8 ring-background">
+                {/* Sibling of the card, not a child -- so the card's mask
+                    cutout below can never clip it. */}
+                <span className="absolute -top-8 z-10 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand/10">
                   <Icon className="h-8 w-8 text-brand" />
                 </span>
-                <p className="font-semibold text-foreground">{CHECK_LABELS[type]}</p>
-                <p className="mt-2 text-sm text-muted">{CHECK_DESCRIPTIONS[type]}</p>
-                <span className="mt-6 flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted transition-colors group-hover:border-brand group-hover:text-brand">
-                  <ArrowRight className="h-4 w-4" />
-                </span>
+                <div
+                  className="flex w-full flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-9 pt-14 shadow-sm transition-shadow group-hover:shadow-md"
+                  style={{
+                    WebkitMaskImage:
+                      "radial-gradient(circle 40px at 50% 0px, transparent 99%, black 100%)",
+                    maskImage:
+                      "radial-gradient(circle 40px at 50% 0px, transparent 99%, black 100%)",
+                  }}
+                >
+                  <p className="font-semibold text-foreground">{CHECK_LABELS[type]}</p>
+                  <p className="mt-2 text-sm text-muted">{CHECK_DESCRIPTIONS[type]}</p>
+                  <span className="mt-6 flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted transition-colors group-hover:border-brand group-hover:text-brand">
+                    <ArrowRight className="h-4 w-4" />
+                  </span>
+                </div>
               </Link>
             );
           })}
