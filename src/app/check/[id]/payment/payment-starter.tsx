@@ -15,15 +15,11 @@ export function PaymentStarter({ reportId }: { reportId: string }) {
       if (cancelled) return;
 
       if (!res.ok) {
-        setError(
-          res.status === 503
-            ? "Payments aren't set up yet. Please check back soon."
-            : data.error || "Could not start payment",
-        );
+        setError(data.error || "Could not start payment");
         return;
       }
 
-      window.location.href = data.authorizationUrl;
+      window.location.href = data.redirectUrl ?? data.authorizationUrl;
     };
 
     start();

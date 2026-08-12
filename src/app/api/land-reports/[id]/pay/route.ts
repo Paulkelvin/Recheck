@@ -13,11 +13,6 @@ export async function POST(
     const user = await requireRole();
     const { id } = await params;
 
-    const secretKey = process.env.PAYSTACK_SECRET_KEY;
-    if (!secretKey) {
-      return NextResponse.json({ error: "Payments are not configured yet" }, { status: 503 });
-    }
-
     const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
     if (!report) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -27,6 +22,29 @@ export async function POST(
     }
     if (report.paymentStatus === "paid") {
       return NextResponse.json({ error: "This report is already paid for" }, { status: 400 });
+    }
+
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+
+    // Paystack isn't wired up yet -- bypass the paywall so the rest of the
+    // pipeline (admin findings, report view) stays testable. Remove this
+    // branch once PAYSTACK_SECRET_KEY is set; real payment takes over
+    // automatically at that point.
+    if (!secretKey) {
+      await db
+        .update(landReports)
+        .set({
+          paymentStatus: "paid",
+          amountPaid: String(REPORT_PRICE_KOBO / 100),
+          status: "under_review",
+          updatedAt: new Date(),
+        })
+        .where(eq(landReports.id, id));
+
+      return NextResponse.json({
+        redirectUrl: `/check/${id}/status?payment=success`,
+        bypassed: true,
+      });
     }
 
     const origin = req.nextUrl.origin;
