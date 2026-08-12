@@ -62,21 +62,21 @@ export default function Home() {
           Six checks, done by real licensed surveyors and a lawyer — not an
           algorithm guessing.
         </p>
-        <div className="mt-12 grid gap-x-6 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
           {CHECK_ORDER.map((type) => {
             const Icon = CHECK_ICONS[type];
             return (
               <Link
                 key={type}
                 href="/check"
-                className="group relative flex flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-6 pt-10 text-center shadow-sm transition-shadow hover:shadow-md"
+                className="group relative mx-auto flex w-full max-w-xs flex-col items-center rounded-2xl border border-border bg-surface px-6 pb-9 pt-14 text-center shadow-sm transition-shadow hover:shadow-md sm:max-w-none"
               >
-                <span className="absolute -top-7 flex h-14 w-14 items-center justify-center rounded-2xl bg-brand/10 text-brand ring-4 ring-background">
-                  <Icon className="h-6 w-6" />
+                <span className="absolute -top-7 flex h-14 w-14 items-center justify-center">
+                  <Icon className="h-10 w-10 text-brand" />
                 </span>
                 <p className="font-semibold text-foreground">{CHECK_LABELS[type]}</p>
                 <p className="mt-2 text-sm text-muted">{CHECK_DESCRIPTIONS[type]}</p>
-                <span className="mt-4 flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted transition-colors group-hover:border-brand group-hover:text-brand">
+                <span className="mt-6 flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted transition-colors group-hover:border-brand group-hover:text-brand">
                   <ArrowRight className="h-4 w-4" />
                 </span>
               </Link>
