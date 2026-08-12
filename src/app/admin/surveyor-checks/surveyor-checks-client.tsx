@@ -20,6 +20,7 @@ export function SurveyorChecksClient() {
   const [loading, setLoading] = useState(true);
   const [surveyorName, setSurveyorName] = useState("");
   const [regNumber, setRegNumber] = useState("");
+  const [tryAutomated, setTryAutomated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +47,11 @@ export function SurveyorChecksClient() {
     const res = await fetch("/api/surveyor-check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ surveyorName, regNumber: regNumber || undefined }),
+      body: JSON.stringify({
+        surveyorName,
+        regNumber: regNumber || undefined,
+        method: tryAutomated ? "automated" : "manual",
+      }),
     });
 
     setSubmitting(false);
@@ -59,6 +64,7 @@ export function SurveyorChecksClient() {
 
     setSurveyorName("");
     setRegNumber("");
+    setTryAutomated(false);
     load();
   };
 
@@ -98,6 +104,14 @@ export function SurveyorChecksClient() {
             className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           />
         </label>
+        <label className="flex items-center gap-1.5 pb-2 text-sm text-zinc-700 dark:text-zinc-300">
+          <input
+            type="checkbox"
+            checked={tryAutomated}
+            onChange={(e) => setTryAutomated(e.target.checked)}
+          />
+          Try automated first
+        </label>
         <button
           type="submit"
           disabled={submitting}
@@ -106,6 +120,11 @@ export function SurveyorChecksClient() {
           {submitting ? "Queuing..." : "Queue check"}
         </button>
       </form>
+      <p className="-mt-4 text-xs text-zinc-500">
+        &quot;Try automated first&quot; only does anything once the SURCON scraper
+        worker is configured and running (scripts/surcon-scan-worker.ts) --
+        otherwise it behaves exactly like manual entry.
+      </p>
 
       {error && (
         <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
@@ -155,6 +174,9 @@ function CheckRow({
             <span className="ml-2 text-sm text-zinc-500">
               ({check.regNumber})
             </span>
+          )}
+          {!check.status && check.method === "automated" && (
+            <span className="ml-2 text-xs text-zinc-400">waiting on worker...</span>
           )}
         </p>
         <StatusBadge status={check.status} />

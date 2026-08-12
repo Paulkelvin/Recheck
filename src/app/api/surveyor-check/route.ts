@@ -24,17 +24,19 @@ export async function GET() {
 
 // Tier 1 surveyor verification is an internal ops tool, not a buyer-facing
 // on-demand check (SURCON's robots.txt disallows automated access, and the
-// design intentionally keeps lookups low-volume and admin-driven). MVP ships
-// manual-entry only (method: "manual"); Playwright gets layered in later as a
-// rate-limited background job, still gated the same way.
+// design intentionally keeps lookups low-volume and admin-driven). Default
+// is manual entry; requesting method: "automated" just queues the row for
+// the rate-limited background worker (scripts/surcon-scan-worker.ts) to
+// pick up -- it still falls back to manual on any scrape failure.
 export async function POST(req: NextRequest) {
   try {
     await requireRole("admin");
 
     const body = await req.json();
-    const { surveyorName, regNumber } = body as {
+    const { surveyorName, regNumber, method } = body as {
       surveyorName?: string;
       regNumber?: string;
+      method?: "manual" | "automated";
     };
 
     if (!surveyorName) {
@@ -46,7 +48,7 @@ export async function POST(req: NextRequest) {
       .values({
         surveyorName,
         regNumber,
-        method: "manual",
+        method: method === "automated" ? "automated" : "manual",
       })
       .returning();
 
