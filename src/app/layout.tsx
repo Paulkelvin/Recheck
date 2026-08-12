@@ -26,6 +26,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col">
         <Providers>{children}</Providers>
+        <footer className="border-t border-zinc-200 px-6 py-4 text-center text-xs text-zinc-500 dark:border-zinc-800">
+          <a href="/privacy" className="underline">
+            Privacy Policy
+          </a>
+        </footer>
       </body>
     </html>
   );
