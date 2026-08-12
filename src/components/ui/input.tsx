@@ -1,7 +1,10 @@
 import { cn } from "@/lib/cn";
 
+// text-base (16px) is required, not cosmetic: iOS Safari auto-zooms the
+// viewport on focusing any input under 16px, and these sit inside text-sm
+// labels, so they'd otherwise inherit 14px and trigger that zoom.
 const FIELD_BASE =
-  "rounded-lg border border-border bg-surface px-3 py-2 text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-brand-accent";
+  "rounded-lg border border-border bg-surface px-3 py-2 text-base text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-brand-accent";
 
 export function Input({
   className,

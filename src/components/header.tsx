@@ -9,12 +9,15 @@ export function Header() {
 
   return (
     <header className="border-b border-border bg-surface">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
-        <Link href="/" className="flex items-center gap-2 text-lg font-semibold text-foreground">
-          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-brand text-sm font-bold text-brand-foreground">
+      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-2 px-4 sm:px-6">
+        <Link
+          href="/"
+          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-foreground sm:gap-2 sm:text-lg"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand text-xs font-bold text-brand-foreground sm:h-8 sm:w-8 sm:text-sm">
             LS
           </span>
-          Land Scam Check
+          <span>Land Scam Check</span>
         </Link>
 
         <nav className="hidden items-center gap-6 text-sm font-medium text-muted sm:flex">
@@ -29,7 +32,7 @@ export function Header() {
           </Link>
         </nav>
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2">
           {status === "loading" ? null : session?.user ? (
             <>
               {session.user.role === "admin" && (
@@ -52,7 +55,7 @@ export function Header() {
                 Sign in
               </LinkButton>
               <LinkButton href="/signup" variant="primary" size="sm">
-                Get started
+                Sign up
               </LinkButton>
             </>
           )}
