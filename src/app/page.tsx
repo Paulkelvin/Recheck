@@ -95,7 +95,7 @@ export default function Home() {
               <Link
                 key={type}
                 href="/check"
-                className="group relative mx-auto flex w-full max-w-xs flex-col items-center text-center sm:max-w-none"
+                className="group relative flex w-full flex-col items-center text-center"
               >
                 {/* Sibling of the card, not a child -- so the card's mask
                     cutout below can never clip it. */}

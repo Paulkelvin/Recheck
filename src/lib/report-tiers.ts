@@ -45,12 +45,12 @@ export function priceForReport(tier: ReportTier, isRecheck: boolean): number {
 }
 
 export const CHECK_LABELS: Record<CheckType, string> = {
-  plan_authenticity: "Is this survey plan real?",
-  overlap: "Has this land been sold to someone else?",
-  acquisition: "Can the government take this land back?",
-  dispute: "Is anyone else claiming this land?",
-  size: "Am I getting the size I'm paying for?",
-  encumbrance: "Does this land have hidden debt or court cases?",
+  plan_authenticity: "Is the plan real?",
+  overlap: "Already sold to someone else?",
+  acquisition: "Can government take it back?",
+  dispute: "Is anyone disputing it?",
+  size: "Is it the right size?",
+  encumbrance: "Hidden debts or court cases?",
 };
 
 export const CHECK_DESCRIPTIONS: Record<CheckType, string> = {
