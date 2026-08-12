@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { landReports, reportFindings, findingCheckTypeEnum } from "@/db/schema";
+import { landReports, reportFindings } from "@/db/schema";
+import { REPORT_TIERS } from "@/lib/report-tiers";
 import { FindingsForm } from "./findings-form";
 
 export default async function AdminReportDetailPage({
@@ -39,7 +40,8 @@ export default async function AdminReportDetailPage({
       <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
         {report.planNumber && `Plan: ${report.planNumber} · `}
         {report.sellerName && `Seller: ${report.sellerName} · `}
-        {report.paymentStatus === "paid" ? "Paid" : "Unpaid"} · status:{" "}
+        {report.paymentStatus === "paid" ? "Paid" : "Unpaid"} ·{" "}
+        {REPORT_TIERS[report.tier].label} · status:{" "}
         {report.status.replace("_", " ")}
       </p>
 
@@ -69,7 +71,7 @@ export default async function AdminReportDetailPage({
 
       <FindingsForm
         reportId={id}
-        checkTypes={[...findingCheckTypeEnum.enumValues]}
+        checkTypes={REPORT_TIERS[report.tier].checkTypes}
         initialFindings={findings.map((f) => ({
           checkType: f.checkType,
           result: f.result,

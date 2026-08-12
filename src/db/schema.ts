@@ -28,6 +28,8 @@ export const landReportStatusEnum = pgEnum("land_report_status", [
   "ready",
 ]);
 
+export const reportTierEnum = pgEnum("report_tier", ["quick", "full"]);
+
 export const paymentStatusEnum = pgEnum("payment_status", [
   "unpaid",
   "paid",
@@ -79,6 +81,7 @@ export const landReports = pgTable("land_reports", {
     .notNull()
     .references(() => users.id),
   status: landReportStatusEnum("status").notNull().default("submitted"),
+  tier: reportTierEnum("tier").notNull().default("full"),
   state: text("state").notNull(),
   lga: text("lga").notNull(),
   address: text("address"),

@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
 import { requireRole, AccessError } from "@/lib/access-control";
-import { REPORT_PRICE_KOBO } from "@/lib/pricing";
+import { REPORT_TIERS } from "@/lib/report-tiers";
 
 export async function POST(
   req: NextRequest,
@@ -24,6 +24,7 @@ export async function POST(
       return NextResponse.json({ error: "This report is already paid for" }, { status: 400 });
     }
 
+    const priceKobo = REPORT_TIERS[report.tier].priceKobo;
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
 
     // Paystack isn't wired up yet -- bypass the paywall so the rest of the
@@ -35,7 +36,7 @@ export async function POST(
         .update(landReports)
         .set({
           paymentStatus: "paid",
-          amountPaid: String(REPORT_PRICE_KOBO / 100),
+          amountPaid: String(priceKobo / 100),
           status: "under_review",
           updatedAt: new Date(),
         })
@@ -58,7 +59,7 @@ export async function POST(
       },
       body: JSON.stringify({
         email: user.email,
-        amount: REPORT_PRICE_KOBO,
+        amount: priceKobo,
         reference,
         callback_url: `${origin}/api/land-reports/${id}/payment-callback`,
         metadata: { landReportId: id, userId: user.id },

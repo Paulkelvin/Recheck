@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { REPORT_TIERS } from "@/lib/report-tiers";
 import { IntakeForm } from "./intake-form";
 
 export default async function CheckPage() {
@@ -20,7 +21,20 @@ export default async function CheckPage() {
         government can take back.
       </p>
 
-      <IntakeForm />
+      <IntakeForm
+        tiers={{
+          quick: {
+            label: REPORT_TIERS.quick.label,
+            description: REPORT_TIERS.quick.description,
+            priceNaira: REPORT_TIERS.quick.priceKobo / 100,
+          },
+          full: {
+            label: REPORT_TIERS.full.label,
+            description: REPORT_TIERS.full.description,
+            priceNaira: REPORT_TIERS.full.priceKobo / 100,
+          },
+        }}
+      />
     </div>
   );
 }

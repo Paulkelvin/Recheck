@@ -4,9 +4,16 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { uploadToCloudinary } from "@/lib/cloudinary-upload";
 
-export function IntakeForm() {
+type TierInfo = { label: string; description: string; priceNaira: number };
+
+export function IntakeForm({
+  tiers,
+}: {
+  tiers: { quick: TierInfo; full: TierInfo };
+}) {
   const router = useRouter();
 
+  const [tier, setTier] = useState<"quick" | "full">("full");
   const [state, setState] = useState("");
   const [lga, setLga] = useState("");
   const [address, setAddress] = useState("");
@@ -41,6 +48,7 @@ export function IntakeForm() {
           planNumber: planNumber || undefined,
           sellerName: sellerName || undefined,
           uploadedDocs,
+          tier,
         }),
       });
 
@@ -64,6 +72,35 @@ export function IntakeForm() {
           {error}
         </p>
       )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {(["quick", "full"] as const).map((key) => (
+          <label
+            key={key}
+            className={`flex cursor-pointer flex-col gap-1 rounded-lg border p-4 text-sm ${
+              tier === key
+                ? "border-black dark:border-white"
+                : "border-zinc-200 dark:border-zinc-800"
+            }`}
+          >
+            <span className="flex items-center justify-between">
+              <span className="flex items-center gap-2 font-medium text-black dark:text-zinc-50">
+                <input
+                  type="radio"
+                  name="tier"
+                  checked={tier === key}
+                  onChange={() => setTier(key)}
+                />
+                {tiers[key].label}
+              </span>
+              <span className="font-medium text-black dark:text-zinc-50">
+                ₦{tiers[key].priceNaira.toLocaleString()}
+              </span>
+            </span>
+            <span className="text-zinc-600 dark:text-zinc-400">{tiers[key].description}</span>
+          </label>
+        ))}
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">

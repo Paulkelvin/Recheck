@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { landReports, reportFindings, findingCheckTypeEnum } from "@/db/schema";
+import { landReports, reportFindings, findingCheckTypeEnum, users } from "@/db/schema";
 import { requireRole, AccessError } from "@/lib/access-control";
+import { REPORT_TIERS } from "@/lib/report-tiers";
+import { sendWhatsAppTemplate } from "@/lib/whatsapp";
 
 const ALL_CHECK_TYPES = findingCheckTypeEnum.enumValues;
 
@@ -98,7 +100,8 @@ export async function PUT(
       .from(reportFindings)
       .where(eq(reportFindings.landReportId, id));
 
-    const allFilled = ALL_CHECK_TYPES.every((type) =>
+    const requiredCheckTypes = REPORT_TIERS[report.tier].checkTypes;
+    const allFilled = requiredCheckTypes.every((type) =>
       allFindings.some((f) => f.checkType === type && f.result !== null),
     );
 
@@ -107,7 +110,15 @@ export async function PUT(
         .update(landReports)
         .set({ status: "ready", updatedAt: new Date() })
         .where(eq(landReports.id, id));
-      // TODO: trigger email/SMS notification to the buyer once a provider is wired up.
+
+      const [buyer] = await db.select().from(users).where(eq(users.id, report.userId)).limit(1);
+      if (buyer?.phone) {
+        const statusUrl = `${req.nextUrl.origin}/check/${id}/status`;
+        const templateName = process.env.WHATSAPP_TEMPLATE_REPORT_READY;
+        if (templateName) {
+          await sendWhatsAppTemplate(buyer.phone, templateName, [buyer.name, statusUrl]);
+        }
+      }
     }
 
     return NextResponse.json({ findings: allFindings, reportReady: allFilled });

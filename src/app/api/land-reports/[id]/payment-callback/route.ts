@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
-import { REPORT_PRICE_KOBO } from "@/lib/pricing";
+import { REPORT_TIERS } from "@/lib/report-tiers";
 
 // Paystack redirects the buyer's browser here after checkout. We re-verify
 // server-side against Paystack's API rather than trusting the redirect query
@@ -24,6 +24,11 @@ export async function GET(
     return NextResponse.redirect(`${origin}/check/${id}/status?payment=failed`);
   }
 
+  const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
+  if (!report) {
+    return NextResponse.redirect(`${origin}/check/${id}/status?payment=failed`);
+  }
+
   const verifyRes = await fetch(
     `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
     { headers: { Authorization: `Bearer ${secretKey}` } },
@@ -34,7 +39,7 @@ export async function GET(
     verifyRes.ok &&
     data.status &&
     data.data?.status === "success" &&
-    data.data?.amount === REPORT_PRICE_KOBO;
+    data.data?.amount === REPORT_TIERS[report.tier].priceKobo;
 
   if (!verified) {
     return NextResponse.redirect(`${origin}/check/${id}/status?payment=failed`);

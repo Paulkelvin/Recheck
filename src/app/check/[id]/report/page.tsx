@@ -3,43 +3,13 @@ import { eq } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { landReports, reportFindings } from "@/db/schema";
+import { REPORT_TIERS, CHECK_LABELS, CHECK_ORDER, RESULT_LABELS, FindingResult } from "@/lib/report-tiers";
 
-const CHECK_LABELS: Record<string, string> = {
-  plan_authenticity: "Is this survey plan real?",
-  overlap: "Has this land been sold to someone else?",
-  acquisition: "Can the government take this land back?",
-  dispute: "Is anyone else claiming this land?",
-  size: "Am I getting the size I'm paying for?",
-  encumbrance: "Does this land have hidden debt or court cases?",
-};
-
-// Fixed display order regardless of what order findings were saved in.
-const CHECK_ORDER = [
-  "plan_authenticity",
-  "overlap",
-  "acquisition",
-  "dispute",
-  "size",
-  "encumbrance",
-] as const;
-
-const RESULT_STYLES: Record<string, { label: string; className: string }> = {
-  pass: {
-    label: "Looks good",
-    className: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-  },
-  fail: {
-    label: "Problem found",
-    className: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  },
-  flagged: {
-    label: "Needs your attention",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  },
-  inconclusive: {
-    label: "Couldn't confirm",
-    className: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300",
-  },
+const RESULT_CLASSNAMES: Record<FindingResult, string> = {
+  pass: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+  fail: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  flagged: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  inconclusive: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300",
 };
 
 export default async function ReportPage({
@@ -70,6 +40,8 @@ export default async function ReportPage({
     .where(eq(reportFindings.landReportId, id));
 
   const findingsByType = new Map(findings.map((f) => [f.checkType, f]));
+  const requiredCheckTypes = REPORT_TIERS[report.tier].checkTypes;
+  const checksToShow = CHECK_ORDER.filter((type) => requiredCheckTypes.includes(type));
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
@@ -78,13 +50,13 @@ export default async function ReportPage({
       </h1>
       <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
         {report.state}, {report.lga}
-        {report.planNumber ? ` — plan ${report.planNumber}` : ""}
+        {report.planNumber ? ` — plan ${report.planNumber}` : ""} ·{" "}
+        {REPORT_TIERS[report.tier].label}
       </p>
 
       <ul className="mt-8 flex flex-col gap-4">
-        {CHECK_ORDER.map((type) => {
+        {checksToShow.map((type) => {
           const finding = findingsByType.get(type);
-          const style = finding?.result ? RESULT_STYLES[finding.result] : null;
 
           return (
             <li
@@ -95,9 +67,11 @@ export default async function ReportPage({
                 <p className="font-medium text-black dark:text-zinc-50">
                   {CHECK_LABELS[type]}
                 </p>
-                {style && (
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${style.className}`}>
-                    {style.label}
+                {finding?.result && (
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${RESULT_CLASSNAMES[finding.result]}`}
+                  >
+                    {RESULT_LABELS[finding.result]}
                   </span>
                 )}
               </div>
@@ -110,6 +84,13 @@ export default async function ReportPage({
           );
         })}
       </ul>
+
+      <a
+        href={`/api/land-reports/${id}/pdf`}
+        className="mt-6 inline-flex h-11 items-center justify-center rounded-full border border-zinc-300 px-5 text-sm font-medium text-black transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+      >
+        Download PDF
+      </a>
     </div>
   );
 }
