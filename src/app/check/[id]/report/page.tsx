@@ -3,13 +3,17 @@ import { eq } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { landReports, reportFindings } from "@/db/schema";
-import { REPORT_TIERS, CHECK_LABELS, CHECK_ORDER, RESULT_LABELS, FindingResult } from "@/lib/report-tiers";
+import { REPORT_TIERS, RECHECK_DISCOUNT_PERCENT, CHECK_LABELS, CHECK_ORDER, RESULT_LABELS, FindingResult } from "@/lib/report-tiers";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { LinkButton } from "@/components/ui/button";
+import { RecheckButton } from "./recheck-button";
 
-const RESULT_CLASSNAMES: Record<FindingResult, string> = {
-  pass: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-  fail: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  flagged: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  inconclusive: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300",
+const RESULT_TONES: Record<FindingResult, "success" | "danger" | "warning" | "neutral"> = {
+  pass: "success",
+  fail: "danger",
+  flagged: "warning",
+  inconclusive: "neutral",
 };
 
 export default async function ReportPage({
@@ -45,10 +49,10 @@ export default async function ReportPage({
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
+      <h1 className="text-2xl font-semibold text-foreground">
         Your Land Scam Check report
       </h1>
-      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="mt-1 text-sm text-muted">
         {report.state}, {report.lga}
         {report.planNumber ? ` — plan ${report.planNumber}` : ""} ·{" "}
         {REPORT_TIERS[report.tier].label}
@@ -59,38 +63,31 @@ export default async function ReportPage({
           const finding = findingsByType.get(type);
 
           return (
-            <li
-              key={type}
-              className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
-            >
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="font-medium text-black dark:text-zinc-50">
-                  {CHECK_LABELS[type]}
-                </p>
-                {finding?.result && (
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${RESULT_CLASSNAMES[finding.result]}`}
-                  >
-                    {RESULT_LABELS[finding.result]}
-                  </span>
+            <li key={type}>
+              <Card>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p className="font-medium text-foreground">{CHECK_LABELS[type]}</p>
+                  {finding?.result && (
+                    <Badge tone={RESULT_TONES[finding.result]}>
+                      {RESULT_LABELS[finding.result]}
+                    </Badge>
+                  )}
+                </div>
+                {finding?.notes && (
+                  <p className="mt-2 text-sm text-muted">{finding.notes}</p>
                 )}
-              </div>
-              {finding?.notes && (
-                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                  {finding.notes}
-                </p>
-              )}
+              </Card>
             </li>
           );
         })}
       </ul>
 
-      <a
-        href={`/api/land-reports/${id}/pdf`}
-        className="mt-6 inline-flex h-11 items-center justify-center rounded-full border border-zinc-300 px-5 text-sm font-medium text-black transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
-      >
-        Download PDF
-      </a>
+      <div className="mt-6 flex flex-wrap gap-3">
+        <LinkButton href={`/api/land-reports/${id}/pdf`} variant="secondary">
+          Download PDF
+        </LinkButton>
+        <RecheckButton reportId={id} discountPercent={RECHECK_DISCOUNT_PERCENT} />
+      </div>
     </div>
   );
 }

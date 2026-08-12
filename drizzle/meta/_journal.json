@@ -15,6 +15,13 @@
       "when": 1786537650429,
       "tag": "0001_ambiguous_post",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786552786243,
+      "tag": "0002_massive_spitfire",
+      "breakpoints": true
     }
   ]
 }

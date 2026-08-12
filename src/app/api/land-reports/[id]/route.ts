@@ -8,7 +8,11 @@ async function loadReportForUser(id: string, user: { id: string; role: string })
   const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
 
   if (!report) return null;
-  if (user.role !== "admin" && report.userId !== user.id) return undefined;
+
+  const isOwner = report.userId === user.id;
+  const isAssignedSurveyor = user.role === "surveyor" && report.assignedSurveyorId === user.id;
+
+  if (user.role !== "admin" && !isOwner && !isAssignedSurveyor) return undefined;
 
   return report;
 }

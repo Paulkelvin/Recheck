@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
+import { LinkButton } from "@/components/ui/button";
 
 const STEPS = [
   { key: "submitted", label: "Submitted" },
@@ -37,31 +37,29 @@ export default async function StatusPage({
 
   return (
     <div className="mx-auto w-full max-w-xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
-        Your Land Scam Check
-      </h1>
+      <h1 className="text-2xl font-semibold text-foreground">Your Land Scam Check</h1>
 
       {payment === "success" && (
-        <p className="mt-4 rounded bg-green-50 px-3 py-2 text-sm text-green-800 dark:bg-green-950 dark:text-green-300">
+        <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           Payment received — we&apos;re on it.
         </p>
       )}
       {payment === "failed" && (
-        <p className="mt-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
           We couldn&apos;t confirm your payment.{" "}
-          <Link href={`/check/${id}/payment`} className="underline">
+          <LinkButton href={`/check/${id}/payment`} variant="ghost" size="sm" className="h-auto p-0 underline">
             Try again
-          </Link>
+          </LinkButton>
           .
         </p>
       )}
 
       {report.paymentStatus !== "paid" && (
-        <p className="mt-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+        <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
           This check hasn&apos;t been paid for yet.{" "}
-          <Link href={`/check/${id}/payment`} className="underline">
+          <a href={`/check/${id}/payment`} className="underline">
             Complete payment
-          </Link>
+          </a>
           .
         </p>
       )}
@@ -74,19 +72,13 @@ export default async function StatusPage({
               <span
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
                   reached
-                    ? "bg-foreground text-background"
-                    : "border border-zinc-300 text-zinc-400 dark:border-zinc-700"
+                    ? "bg-brand text-brand-foreground"
+                    : "border border-border text-muted"
                 }`}
               >
                 {i + 1}
               </span>
-              <span
-                className={
-                  reached
-                    ? "font-medium text-black dark:text-zinc-50"
-                    : "text-zinc-400"
-                }
-              >
+              <span className={reached ? "font-medium text-foreground" : "text-muted"}>
                 {step.label}
               </span>
             </li>
@@ -95,12 +87,9 @@ export default async function StatusPage({
       </ol>
 
       {report.status === "ready" && (
-        <Link
-          href={`/check/${id}/report`}
-          className="mt-8 flex h-12 items-center justify-center rounded-full bg-foreground px-6 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-        >
+        <LinkButton href={`/check/${id}/report`} size="lg" className="mt-8">
           View your report
-        </Link>
+        </LinkButton>
       )}
     </div>
   );

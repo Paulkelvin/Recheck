@@ -6,6 +6,7 @@ import {
   timestamp,
   numeric,
   pgEnum,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["buyer", "surveyor", "admin"]);
@@ -91,6 +92,7 @@ export const landReports = pgTable("land_reports", {
   paymentStatus: paymentStatusEnum("payment_status").notNull().default("unpaid"),
   amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }),
   assignedSurveyorId: uuid("assigned_surveyor_id").references(() => users.id),
+  previousReportId: uuid("previous_report_id").references((): AnyPgColumn => landReports.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

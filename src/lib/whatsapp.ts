@@ -9,13 +9,7 @@
 // Graceful no-op when unconfigured, matching the Paystack bypass pattern --
 // this never blocks the rest of the pipeline.
 
-function normalizeNigerianPhone(phone: string): string | null {
-  const digits = phone.replace(/[^\d]/g, "");
-  if (digits.startsWith("234")) return digits;
-  if (digits.startsWith("0") && digits.length === 11) return `234${digits.slice(1)}`;
-  if (digits.length === 10) return `234${digits}`;
-  return null;
-}
+import { normalizeNigerianPhone } from "./phone";
 
 export async function sendWhatsAppTemplate(
   toPhone: string,

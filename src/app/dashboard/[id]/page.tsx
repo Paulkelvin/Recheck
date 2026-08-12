@@ -1,28 +1,36 @@
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
+import { auth } from "@/auth";
 import { db } from "@/db";
-import { landReports, reportFindings, users } from "@/db/schema";
+import { landReports, reportFindings } from "@/db/schema";
 import { REPORT_TIERS } from "@/lib/report-tiers";
 import { FindingsForm } from "@/components/findings-form";
-import { AssignSurveyor } from "./assign-surveyor";
 
-export default async function AdminReportDetailPage({
+export default async function SurveyorReportPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect(`/login?callbackUrl=/dashboard/${id}`);
+  }
+  if (session.user.role !== "surveyor") {
+    redirect("/");
+  }
 
   const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
 
-  if (!report) {
-    redirect("/admin/reports");
+  if (!report || report.assignedSurveyorId !== session.user.id) {
+    redirect("/dashboard");
   }
 
-  const [findings, surveyors] = await Promise.all([
-    db.select().from(reportFindings).where(eq(reportFindings.landReportId, id)),
-    db.select().from(users).where(eq(users.role, "surveyor")),
-  ]);
+  const findings = await db
+    .select()
+    .from(reportFindings)
+    .where(eq(reportFindings.landReportId, id));
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
@@ -32,8 +40,7 @@ export default async function AdminReportDetailPage({
       <p className="mt-1 text-sm text-muted">
         {report.planNumber && `Plan: ${report.planNumber} · `}
         {report.sellerName && `Seller: ${report.sellerName} · `}
-        {report.paymentStatus === "paid" ? "Paid" : "Unpaid"} ·{" "}
-        {REPORT_TIERS[report.tier].label} · status: {report.status.replace("_", " ")}
+        {REPORT_TIERS[report.tier].label}
       </p>
 
       {report.address && <p className="mt-2 text-sm text-muted">{report.address}</p>}
@@ -57,12 +64,6 @@ export default async function AdminReportDetailPage({
           </ul>
         </div>
       )}
-
-      <AssignSurveyor
-        reportId={id}
-        currentSurveyorId={report.assignedSurveyorId}
-        surveyors={surveyors.map((s) => ({ id: s.id, name: s.name }))}
-      />
 
       <FindingsForm
         reportId={id}

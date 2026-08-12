@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { landReports } from "@/db/schema";
 import { requireRole, AccessError } from "@/lib/access-control";
-import { REPORT_TIERS } from "@/lib/report-tiers";
+import { priceForReport } from "@/lib/report-tiers";
 
 export async function POST(
   req: NextRequest,
@@ -24,7 +24,7 @@ export async function POST(
       return NextResponse.json({ error: "This report is already paid for" }, { status: 400 });
     }
 
-    const priceKobo = REPORT_TIERS[report.tier].priceKobo;
+    const priceKobo = priceForReport(report.tier, Boolean(report.previousReportId));
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
 
     // Paystack isn't wired up yet -- bypass the paywall so the rest of the

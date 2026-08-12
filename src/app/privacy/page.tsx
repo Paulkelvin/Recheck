@@ -5,14 +5,14 @@ export const metadata = {
 export default function PrivacyPage() {
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
+      <h1 className="text-2xl font-semibold text-foreground">
         Privacy Policy
       </h1>
-      <p className="mt-1 text-sm text-zinc-500">Last updated: 12 August 2026</p>
+      <p className="mt-1 text-sm text-muted">Last updated: 12 August 2026</p>
 
-      <div className="mt-8 flex flex-col gap-6 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
+      <div className="mt-8 flex flex-col gap-6 text-sm leading-6 text-muted">
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             1. What we collect
           </h2>
           <p>When you use Land Scam Check, we collect:</p>
@@ -35,7 +35,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             2. Why we collect it
           </h2>
           <p>
@@ -48,7 +48,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             3. Who sees your information
           </h2>
           <p>
@@ -62,7 +62,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             4. How we store it
           </h2>
           <p>
@@ -74,7 +74,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             5. Your rights
           </h2>
           <p>
@@ -86,7 +86,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             6. SURCON and third-party verification
           </h2>
           <p>
@@ -99,7 +99,7 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 font-semibold text-black dark:text-zinc-50">
+          <h2 className="mb-2 font-semibold text-foreground">
             7. Contact
           </h2>
           <p>

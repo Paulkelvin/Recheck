@@ -1,57 +1,86 @@
-import Link from "next/link";
-
-const fears = [
-  "Is this survey plan real?",
-  "Has this land been sold to someone else?",
-  "Can the government take this land back?",
-  "Is anyone else claiming this land?",
-];
+import { REPORT_TIERS, CHECK_LABELS, CHECK_ORDER } from "@/lib/report-tiers";
+import { LinkButton } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 export default function Home() {
   return (
-    <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-3xl flex-1 flex-col items-center gap-12 px-6 py-24 text-center">
-        <div className="flex flex-col items-center gap-4">
+    <div className="flex flex-1 flex-col">
+      <section className="border-b border-border bg-surface">
+        <div className="mx-auto flex w-full max-w-5xl flex-col items-center gap-6 px-6 py-20 text-center">
           <span className="rounded-full bg-red-100 px-3 py-1 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
-            Land Scam Check
+            Before you pay for land
           </span>
-          <h1 className="max-w-xl text-3xl font-semibold leading-tight tracking-tight text-black dark:text-zinc-50 sm:text-4xl">
-            Before you pay for that land — make sure it&apos;s not fake, not
-            already sold to someone else, and not something the government
-            can take back.
+          <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+            Don&apos;t find out it was fake after you&apos;ve paid.
           </h1>
-          <p className="max-w-lg text-lg text-zinc-600 dark:text-zinc-400">
-            A quick check before you hand over your money, so you don&apos;t
-            find out the hard way.
+          <p className="max-w-xl text-lg text-muted">
+            Make sure the plan is real, the land isn&apos;t already sold to
+            someone else, and the government can&apos;t take it back —
+            before you hand over your money.
           </p>
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row">
+            <LinkButton href="/check" size="lg">
+              Check my land
+            </LinkButton>
+            <LinkButton href="/directory" variant="secondary" size="lg">
+              Find a licensed surveyor
+            </LinkButton>
+          </div>
         </div>
+      </section>
 
-        <ul className="grid w-full gap-3 text-left sm:grid-cols-2">
-          {fears.map((fear) => (
-            <li
-              key={fear}
-              className="rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm font-medium text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
-            >
-              {fear}
-            </li>
+      <section className="mx-auto w-full max-w-5xl px-6 py-16">
+        <h2 className="text-center text-2xl font-semibold text-foreground">
+          What we check
+        </h2>
+        <p className="mx-auto mt-2 max-w-md text-center text-muted">
+          Six checks, done by real licensed surveyors and a lawyer — not an
+          algorithm guessing.
+        </p>
+        <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {CHECK_ORDER.map((type, i) => (
+            <Card key={type} className="flex flex-col gap-2">
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-background text-sm font-semibold text-brand">
+                {i + 1}
+              </span>
+              <p className="font-medium text-foreground">{CHECK_LABELS[type]}</p>
+            </Card>
           ))}
-        </ul>
-
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <Link
-            className="flex h-12 items-center justify-center rounded-full bg-foreground px-6 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-            href="/check"
-          >
-            Check my land
-          </Link>
-          <Link
-            className="flex h-12 items-center justify-center rounded-full border border-solid border-black/[.08] px-6 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
-            href="/directory"
-          >
-            Find a licensed surveyor
-          </Link>
         </div>
-      </main>
+      </section>
+
+      <section className="border-t border-border bg-surface">
+        <div className="mx-auto w-full max-w-5xl px-6 py-16">
+          <h2 className="text-center text-2xl font-semibold text-foreground">
+            Pick your level of certainty
+          </h2>
+          <div className="mt-10 grid gap-6 sm:grid-cols-2">
+            <Card className="flex flex-col gap-3">
+              <p className="text-lg font-semibold text-foreground">
+                {REPORT_TIERS.quick.label}
+              </p>
+              <p className="text-3xl font-semibold text-foreground">
+                ₦{(REPORT_TIERS.quick.priceKobo / 100).toLocaleString()}
+              </p>
+              <p className="text-sm text-muted">{REPORT_TIERS.quick.description}</p>
+            </Card>
+            <Card className="flex flex-col gap-3 border-brand">
+              <p className="text-lg font-semibold text-foreground">
+                {REPORT_TIERS.full.label}
+              </p>
+              <p className="text-3xl font-semibold text-foreground">
+                ₦{(REPORT_TIERS.full.priceKobo / 100).toLocaleString()}
+              </p>
+              <p className="text-sm text-muted">{REPORT_TIERS.full.description}</p>
+            </Card>
+          </div>
+          <div className="mt-8 flex justify-center">
+            <LinkButton href="/check" size="lg">
+              Start my check
+            </LinkButton>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

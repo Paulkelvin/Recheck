@@ -5,6 +5,7 @@ import { landReports, reportFindings, findingCheckTypeEnum, users } from "@/db/s
 import { requireRole, AccessError } from "@/lib/access-control";
 import { REPORT_TIERS } from "@/lib/report-tiers";
 import { sendWhatsAppTemplate } from "@/lib/whatsapp";
+import { sendSms } from "@/lib/sms";
 
 const ALL_CHECK_TYPES = findingCheckTypeEnum.enumValues;
 
@@ -22,13 +23,15 @@ export async function GET(
     }
 
     const isOwner = report.userId === user.id;
-    if (user.role !== "admin" && !isOwner) {
+    const isAssignedSurveyor = user.role === "surveyor" && report.assignedSurveyorId === user.id;
+
+    if (user.role !== "admin" && !isOwner && !isAssignedSurveyor) {
       return NextResponse.json({ error: "Not authorized for this action" }, { status: 403 });
     }
 
-    // Buyers only see the report once it's paid for and finished; admins can
-    // see in-progress findings while working the queue.
-    if (user.role !== "admin" && (report.paymentStatus !== "paid" || report.status !== "ready")) {
+    // Buyers only see the report once it's paid for and finished; admins and
+    // the assigned surveyor can see in-progress findings while working it.
+    if (isOwner && user.role === "buyer" && (report.paymentStatus !== "paid" || report.status !== "ready")) {
       return NextResponse.json({ error: "Report is not ready yet" }, { status: 403 });
     }
 
@@ -46,15 +49,16 @@ export async function GET(
   }
 }
 
-// Admin fills in one finding at a time (surveyor/admin working the queue in
-// /admin/reports/:id). Once every check type has a result, the parent report
-// flips to "ready" automatically.
+// Admin OR the surveyor/lawyer assigned to this report fills in one finding
+// at a time (in /admin/reports/:id or /dashboard/:id respectively). Once
+// every check type has a result, the parent report flips to "ready"
+// automatically.
 export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    await requireRole("admin");
+    const user = await requireRole("admin", "surveyor");
     const { id } = await params;
 
     const body = await req.json();
@@ -72,6 +76,9 @@ export async function PUT(
     const [report] = await db.select().from(landReports).where(eq(landReports.id, id)).limit(1);
     if (!report) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (user.role === "surveyor" && report.assignedSurveyorId !== user.id) {
+      return NextResponse.json({ error: "Not authorized for this action" }, { status: 403 });
     }
 
     const [existing] = await db
@@ -115,8 +122,18 @@ export async function PUT(
       if (buyer?.phone) {
         const statusUrl = `${req.nextUrl.origin}/check/${id}/status`;
         const templateName = process.env.WHATSAPP_TEMPLATE_REPORT_READY;
-        if (templateName) {
-          await sendWhatsAppTemplate(buyer.phone, templateName, [buyer.name, statusUrl]);
+
+        const whatsappResult = templateName
+          ? await sendWhatsAppTemplate(buyer.phone, templateName, [buyer.name, statusUrl])
+          : { sent: false, reason: "not_configured" as const };
+
+        // SMS is the backup channel -- only used if WhatsApp didn't actually
+        // send (not configured, invalid number, or a delivery failure).
+        if (!whatsappResult.sent) {
+          await sendSms(
+            buyer.phone,
+            `Hi ${buyer.name}, your Land Scam Check report is ready: ${statusUrl}`,
+          );
         }
       }
     }

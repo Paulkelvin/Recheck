@@ -34,6 +34,16 @@ export function isReportTier(value: unknown): value is ReportTier {
   return value === "quick" || value === "full";
 }
 
+// Land status changes over time -- a plot verified clean months ago could
+// be sold again since. Re-checks get a discount off the normal tier price.
+export const RECHECK_DISCOUNT_PERCENT = Number(process.env.RECHECK_DISCOUNT_PERCENT ?? 30);
+
+export function priceForReport(tier: ReportTier, isRecheck: boolean): number {
+  const base = REPORT_TIERS[tier].priceKobo;
+  if (!isRecheck) return base;
+  return Math.round(base * (1 - RECHECK_DISCOUNT_PERCENT / 100));
+}
+
 export const CHECK_LABELS: Record<CheckType, string> = {
   plan_authenticity: "Is this survey plan real?",
   overlap: "Has this land been sold to someone else?",

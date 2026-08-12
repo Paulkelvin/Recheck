@@ -1,0 +1,2 @@
+ALTER TABLE "land_reports" ADD COLUMN "previous_report_id" uuid;--> statement-breakpoint
+ALTER TABLE "land_reports" ADD CONSTRAINT "land_reports_previous_report_id_land_reports_id_fk" FOREIGN KEY ("previous_report_id") REFERENCES "public"."land_reports"("id") ON DELETE no action ON UPDATE no action;

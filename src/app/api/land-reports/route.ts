@@ -9,14 +9,22 @@ export async function GET() {
   try {
     const user = await requireRole();
 
-    const reports =
-      user.role === "admin"
-        ? await db.select().from(landReports).orderBy(desc(landReports.createdAt))
-        : await db
-            .select()
-            .from(landReports)
-            .where(eq(landReports.userId, user.id))
-            .orderBy(desc(landReports.createdAt));
+    let reports;
+    if (user.role === "admin") {
+      reports = await db.select().from(landReports).orderBy(desc(landReports.createdAt));
+    } else if (user.role === "surveyor") {
+      reports = await db
+        .select()
+        .from(landReports)
+        .where(eq(landReports.assignedSurveyorId, user.id))
+        .orderBy(desc(landReports.createdAt));
+    } else {
+      reports = await db
+        .select()
+        .from(landReports)
+        .where(eq(landReports.userId, user.id))
+        .orderBy(desc(landReports.createdAt));
+    }
 
     return NextResponse.json({ reports });
   } catch (err) {

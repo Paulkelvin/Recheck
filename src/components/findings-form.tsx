@@ -1,6 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { CHECK_LABELS, type CheckType } from "@/lib/report-tiers";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Select, Input, Label } from "@/components/ui/input";
 
 type Result = "pass" | "fail" | "flagged" | "inconclusive";
 
@@ -9,22 +14,13 @@ type FindingState = {
   notes: string;
 };
 
-const CHECK_LABELS: Record<string, string> = {
-  plan_authenticity: "Is this survey plan real?",
-  overlap: "Has this land been sold to someone else?",
-  acquisition: "Can the government take this land back?",
-  dispute: "Is anyone else claiming this land?",
-  size: "Am I getting the size I'm paying for?",
-  encumbrance: "Does this land have hidden debt or court cases?",
-};
-
 export function FindingsForm({
   reportId,
   checkTypes,
   initialFindings,
 }: {
   reportId: string;
-  checkTypes: string[];
+  checkTypes: CheckType[];
   initialFindings: { checkType: string; result: Result | null; notes: string | null }[];
 }) {
   const initial: Record<string, FindingState> = {};
@@ -74,34 +70,27 @@ export function FindingsForm({
   return (
     <div className="mt-8 flex flex-col gap-4">
       {allReady && (
-        <p className="rounded bg-green-50 px-3 py-2 text-sm text-green-800 dark:bg-green-950 dark:text-green-300">
+        <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           All findings filled in — this report is now marked ready and visible to the buyer.
         </p>
       )}
       {error && (
-        <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
           {error}
         </p>
       )}
 
       {checkTypes.map((type) => (
-        <div
-          key={type}
-          className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
-        >
+        <Card key={type}>
           <div className="flex items-center justify-between">
-            <p className="font-medium text-black dark:text-zinc-50">{CHECK_LABELS[type]}</p>
-            {saved.has(type) && (
-              <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-950 dark:text-green-300">
-                Saved
-              </span>
-            )}
+            <p className="font-medium text-foreground">{CHECK_LABELS[type]}</p>
+            {saved.has(type) && <Badge tone="success">Saved</Badge>}
           </div>
 
           <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-            <label className="flex flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+            <Label>
               Result
-              <select
+              <Select
                 value={values[type].result}
                 onChange={(e) =>
                   setValues((prev) => ({
@@ -109,17 +98,16 @@ export function FindingsForm({
                     [type]: { ...prev[type], result: e.target.value as Result },
                   }))
                 }
-                className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
               >
                 <option value="pass">Pass</option>
                 <option value="fail">Fail</option>
                 <option value="flagged">Flagged</option>
                 <option value="inconclusive">Inconclusive</option>
-              </select>
-            </label>
-            <label className="flex flex-1 flex-col gap-1 text-sm text-zinc-700 dark:text-zinc-300">
+              </Select>
+            </Label>
+            <Label className="flex-1">
               Notes (shown to the buyer)
-              <input
+              <Input
                 value={values[type].notes}
                 onChange={(e) =>
                   setValues((prev) => ({
@@ -127,18 +115,17 @@ export function FindingsForm({
                     [type]: { ...prev[type], notes: e.target.value },
                   }))
                 }
-                className="rounded border border-zinc-300 px-3 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
               />
-            </label>
-            <button
+            </Label>
+            <Button
               onClick={() => handleSave(type)}
               disabled={savingType === type}
-              className="h-11 rounded-full border border-zinc-300 px-4 text-sm font-medium text-black transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+              variant="secondary"
             >
               {savingType === type ? "Saving..." : "Save"}
-            </button>
+            </Button>
           </div>
-        </div>
+        </Card>
       ))}
     </div>
   );

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { Header } from "@/components/header";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,15 +23,20 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-        <Providers>{children}</Providers>
-        <footer className="border-t border-zinc-200 px-6 py-4 text-center text-xs text-zinc-500 dark:border-zinc-800">
-          <a href="/privacy" className="underline">
-            Privacy Policy
-          </a>
-        </footer>
+      <body className="flex min-h-dvh flex-col bg-background text-foreground">
+        <Providers>
+          <Header />
+          <main className="flex flex-1 flex-col">{children}</main>
+          <footer className="border-t border-border px-6 py-6 text-center text-xs text-muted">
+            <a href="/privacy" className="underline hover:text-foreground">
+              Privacy Policy
+            </a>
+            <span className="mx-2">·</span>
+            <span>© {new Date().getFullYear()} Land Scam Check</span>
+          </footer>
+        </Providers>
       </body>
     </html>
   );
