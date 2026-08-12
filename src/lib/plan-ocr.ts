@@ -81,15 +81,14 @@ const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+
 // reference) has none.
 const DISTANCE_CANDIDATE = /^\d{1,4}\.\d{1,3}m?$/i;
 const MAX_BEARING_TOKEN_SPAN = 4;
-// How close (px) two words' X positions need to be to belong to the same
-// rotated vertical label -- measured from real plans, columns of rotated
-// text land within a couple of pixels of each other.
-const VERTICAL_CLUSTER_X_TOLERANCE = 20;
-// Real rotated bearing labels span up to ~160px in Y between their degree
-// and minute fragments -- capping the allowed gap keeps an X-coincidental
-// but unrelated digit elsewhere on the page (a block number, a plan ref)
-// from being pulled into the same column.
-const VERTICAL_CLUSTER_MAX_Y_GAP = 220;
+// Expressed as multiples of the page's median word height rather than fixed
+// pixels -- see medianWordHeight's comment. Calibrated against a real plan
+// at native resolution (median word height 9px, tolerance 20px, gap 220px)
+// and kept as the same ratios: 2.2x median height for X-alignment, and a
+// generous 24x for the Y-gap real rotated labels span between their degree
+// and minute fragments.
+const VERTICAL_CLUSTER_X_TOLERANCE_RATIO = 2.2;
+const VERTICAL_CLUSTER_MAX_Y_GAP_RATIO = 24;
 // Closure tolerance: a real traverse should walk back to its starting
 // point. Allow up to 1% of the total perimeter or 2m, whichever is more
 // forgiving, to absorb ordinary OCR digit noise without accepting a
@@ -218,13 +217,24 @@ function extractWordsAndConfidence(response: unknown): {
 // Groups words into table rows by vertical position instead of Vision's text
 // line breaks: sort by Y, start a new row whenever the gap to the next word
 // exceeds half a typical word's height, then sort each row left-to-right.
+// A page scanned or exported at a different resolution scales every word's
+// pixel size and spacing together, so word height is the natural "ruler" to
+// measure other pixel distances against instead of a fixed constant --
+// found this the hard way: sending a 3x-upscaled version of the same
+// document (to test whether upscaling recovers faint text) fed the exact
+// same fixed-pixel clustering thresholds words three times further apart,
+// and broke clustering that worked fine at native resolution.
+function medianWordHeight(words: OcrWord[]): number {
+  if (words.length === 0) return 20;
+  const heights = words.map((w) => w.height).sort((a, b) => a - b);
+  return heights[Math.floor(heights.length / 2)];
+}
+
 function groupIntoRows(words: OcrWord[]): OcrWord[][] {
   if (words.length === 0) return [];
 
   const sorted = [...words].sort((a, b) => a.y - b.y);
-  const medianHeight = sorted.map((w) => w.height).sort((a, b) => a - b)[
-    Math.floor(sorted.length / 2)
-  ];
+  const medianHeight = medianWordHeight(sorted);
   const rowGapThreshold = medianHeight * 0.6;
 
   const rows: OcrWord[][] = [[sorted[0]]];
@@ -326,14 +336,21 @@ function resolveGridValue(token: OcrWord, raw: string, words: OcrWord[]): number
     return direct;
   }
 
+  // Same resolution-relative reasoning as the vertical bearing clustering
+  // above -- fixed pixel distances here would misfire on a page scanned or
+  // exported at a different size.
+  const scale = medianWordHeight(words);
+  const closeGap = scale * 1.7;
+  const lineWidth = scale * 10;
+
   let best: { value: number; distance: number } | null = null;
   for (const candidate of words) {
     if (candidate === token || !GRID_PREFIX_TOKEN.test(candidate.text)) continue;
 
     const dx = token.x - candidate.x;
     const dy = token.y - candidate.y;
-    const sameLineToTheLeft = Math.abs(dy) <= 15 && dx > 0 && dx <= 90;
-    const stackedVertically = Math.abs(dx) <= 20 && Math.abs(dy) <= 90;
+    const sameLineToTheLeft = Math.abs(dy) <= closeGap && dx > 0 && dx <= lineWidth;
+    const stackedVertically = Math.abs(dx) <= closeGap && Math.abs(dy) <= lineWidth;
     if (!sameLineToTheLeft && !stackedVertically) continue;
 
     const value = Number(`${candidate.text}${raw}`);
@@ -466,6 +483,10 @@ function bearingCandidatesFromVerticalColumns(
     (w) => !exclude.has(w) && (fragmentPattern.test(w.text) || symbolPattern.test(w.text)),
   );
 
+  const scale = medianWordHeight(words);
+  const xTolerance = scale * VERTICAL_CLUSTER_X_TOLERANCE_RATIO;
+  const maxYGap = scale * VERTICAL_CLUSTER_MAX_Y_GAP_RATIO;
+
   // Single-linkage clustering by Y: a fragment joins a column only if it's
   // both X-aligned with AND within a plausible Y-gap of that column's
   // nearest member -- X-alignment alone isn't enough, since an unrelated
@@ -475,10 +496,7 @@ function bearingCandidatesFromVerticalColumns(
   for (const w of [...fragments].sort((a, b) => a.y - b.y)) {
     const column = columns.find((c) => {
       const nearest = c[c.length - 1];
-      return (
-        Math.abs(nearest.x - w.x) <= VERTICAL_CLUSTER_X_TOLERANCE &&
-        Math.abs(w.y - nearest.y) <= VERTICAL_CLUSTER_MAX_Y_GAP
-      );
+      return Math.abs(nearest.x - w.x) <= xTolerance && Math.abs(w.y - nearest.y) <= maxYGap;
     });
     if (column) column.push(w);
     else columns.push([w]);
