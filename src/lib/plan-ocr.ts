@@ -146,6 +146,7 @@ async function runVisionOcr(
     if (!res.ok) throw new Error(`Vision API error (${res.status})`);
     const data = await res.json();
     const pageResponse = data.responses?.[0]?.responses?.[0];
+    assertNoVisionError(pageResponse);
     return extractWordsAndConfidence(pageResponse);
   }
 
@@ -163,7 +164,20 @@ async function runVisionOcr(
   });
   if (!res.ok) throw new Error(`Vision API error (${res.status})`);
   const data = await res.json();
+  assertNoVisionError(data.responses?.[0]);
   return extractWordsAndConfidence(data.responses?.[0]);
+}
+
+// The batch endpoint returns HTTP 200 even when the individual image failed
+// (bad image data, quota exceeded, permission denied) -- the real failure
+// is nested in responses[0].error, and `res.ok` alone never sees it. Left
+// unchecked, this was silently indistinguishable from "the plan genuinely
+// has no readable text on it": both produce an empty word list, so a quota
+// or auth problem misreported itself as "insufficient_coordinates" -- a
+// document-quality verdict about a plan that was never actually read.
+function assertNoVisionError(response: unknown): void {
+  const err = (response as { error?: { code?: number; message?: string } } | undefined)?.error;
+  if (err) throw new Error(`Vision API returned an error: ${err.code} ${err.message}`);
 }
 
 type VisionVertex = { x?: number; y?: number };
