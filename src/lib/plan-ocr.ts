@@ -4,6 +4,7 @@ import {
   findStateInText,
   type LatLng,
   type ProjectionSystem,
+  type UtmZone,
 } from "./nigeria-belts";
 
 // Best-effort, fully automatic extraction of a plot's beacon coordinates from
@@ -261,18 +262,22 @@ function detectProjection(
   formState: string,
 ): { system: ProjectionSystem; label: string } | null {
   const upper = fullText.toUpperCase();
-  // Real plans letter-space this ("ORIGIN:- U. T. M. (ZONE 31)") and OCR
-  // preserves the gaps, so the separators have to be optional -- without
-  // this the plan's own stated system is missed and it silently falls back
-  // to guessing a belt from the state name.
-  const mentionsUtm = /\bU\.?\s*T\.?\s*M\.?/.test(upper);
 
-  if (mentionsUtm) {
-    const zoneMatch = upper.match(/ZONE\s*(\d{1,2})/);
-    const zone = zoneMatch ? Number(zoneMatch[1]) : null;
-    if (zone === 31 || zone === 32) {
-      return { system: { type: "utm", zone }, label: `utm-zone-${zone}` };
-    }
+  // A stated zone number is the reliable signal, not how the surveyor chose
+  // to spell the projection. Real plans write the same thing at least three
+  // ways -- "U.T.M.", letter-spaced "U. T. M.", and spelled out as
+  // "UNIVERSAL" -- and matching on the wording alone missed the third,
+  // which then fell through to guessing a belt from the state name and put
+  // an Osun plot 623km away in Kaduna. That wrong position is still inside
+  // Nigeria, so no downstream bounds check would have caught it.
+  //
+  // 31 and 32 are the only UTM zones covering Nigeria, and the Minna belts
+  // are named (West/Mid/East) rather than numbered, so a stated "ZONE 31"
+  // or "ZONE 32" is unambiguous.
+  const zoneMatch = upper.match(/\bZONE\s*(3[12])\b/);
+  if (zoneMatch) {
+    const zone = Number(zoneMatch[1]) as UtmZone;
+    return { system: { type: "utm", zone }, label: `utm-zone-${zone}` };
   }
 
   const belt = /WEST\s+BELT/.test(upper)
