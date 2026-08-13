@@ -24,6 +24,8 @@ const REASON_MESSAGES: Record<string, string> = {
   insufficient_coordinates: "We couldn't find plot coordinates on this document.",
   insufficient_legs:
     "We found where this plot starts, but couldn't read its boundary bearings clearly enough.",
+  conflicting_labels:
+    "We found where this plot starts, but some of its boundary measurements didn't add up consistently.",
   implausible_coordinates: "The coordinates we found didn't look right, so we're not showing them.",
   outside_nigeria: "The coordinates we found didn't check out, so we're not showing them.",
   traverse_did_not_close: "The plot boundary we calculated didn't add up, so we're not showing it.",

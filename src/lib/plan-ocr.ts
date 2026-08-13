@@ -24,7 +24,11 @@ export type PlanOcrResult =
   | { status: "available"; coordinates: LatLng[]; note?: string; debug?: OcrDebugInfo }
   | { status: "unavailable"; reason: string; note?: string; debug?: OcrDebugInfo };
 
-type LegCandidate = { bearingDeg: number; distanceM: number };
+// x/y (the bearing's anchor position) are carried along so the boundary's
+// known geometry -- see edgesFromBeaconPositions -- can be used to order
+// legs for large plots, without needing a second lookup back to whichever
+// candidate produced each leg.
+type LegCandidate = { bearingDeg: number; distanceM: number; x?: number; y?: number };
 
 type OcrDebugInfo = {
   words: OcrWord[];
@@ -37,6 +41,8 @@ type OcrDebugInfo = {
   closureErrorM?: number;
   projection?: string;
   areaCheck?: { statedM2: number; computedM2: number } | null;
+  beaconCount?: number;
+  hadConflict?: boolean;
 };
 
 const MIN_CONFIDENCE = 0.6;
@@ -81,6 +87,12 @@ const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+
 // context: a bare whole number (a scale-bar tick like "40m", a plan
 // reference) has none.
 const DISTANCE_CANDIDATE = /^\d{1,4}\.\d{1,3}m?$/i;
+// Nigerian beacon labels observed on every real plan so far, from three
+// different surveyors/states: 2 letters + 4 digits + 2 letters
+// (DF8477YE, CA8698PE, AD6105GE). Deliberately strict -- a false match here
+// would corrupt the edge geometry below, and missing a genuine beacon just
+// degrades to the existing behavior, so under-matching is the safe failure.
+const BEACON_LABEL = /^[A-Z]{2}\d{4}[A-Z]{2}$/i;
 const MAX_BEARING_TOKEN_SPAN = 4;
 // Expressed as multiples of the page's median word height rather than fixed
 // pixels -- see medianWordHeight's comment. Calibrated against a real plan
@@ -401,6 +413,61 @@ function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
   return pairs;
 }
 
+// --- Boundary geometry from beacon label positions ----------------------
+//
+// Beacon labels (CA8698PE, AD6105GE, ...) are large, clean text -- read with
+// far higher confidence than the small, easily-scattered bearing/distance
+// annotations. Their pixel positions on the page are a second, independent
+// source of the boundary's actual shape, usable two ways below: as a real
+// cross-check on whether a bearing candidate's own fragments agree on which
+// edge they belong to, and as an ordering strategy for polygons too large
+// for the exhaustive permutation search.
+//
+// This does NOT resolve the corner-shared-label ambiguity found on a real
+// plan (verified: the ambiguous fragment there was still geometrically
+// closer to the wrong edge's midpoint than the right one) -- it makes
+// exactly that kind of contradiction detectable instead of silently
+// mis-assigned, and extends what a beacon-position, non-exhaustive ordering
+// can attempt for plans with more sides than 8. It is not a substitute for
+// seeing which drawn line a label actually sits along.
+type Edge = { midX: number; midY: number };
+
+function extractBeaconPositions(words: OcrWord[]): Array<{ x: number; y: number }> {
+  return words.filter((w) => BEACON_LABEL.test(w.text)).map((w) => ({ x: w.x, y: w.y }));
+}
+
+// Beacons are drawn at roughly their true relative positions on the page --
+// sorting by angle around their centroid recovers the polygon's actual
+// vertex cycle without needing to know which text label belongs to which
+// edge at all.
+function edgesFromBeaconPositions(beacons: Array<{ x: number; y: number }>): Edge[] {
+  if (beacons.length < 3) return [];
+
+  const cx = beacons.reduce((s, b) => s + b.x, 0) / beacons.length;
+  const cy = beacons.reduce((s, b) => s + b.y, 0) / beacons.length;
+  const ordered = [...beacons].sort(
+    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx),
+  );
+
+  return ordered.map((b, i) => {
+    const next = ordered[(i + 1) % ordered.length];
+    return { midX: (b.x + next.x) / 2, midY: (b.y + next.y) / 2 };
+  });
+}
+
+function nearestEdgeIndex(x: number, y: number, edges: Edge[]): number {
+  let best = 0;
+  let bestDist = Infinity;
+  edges.forEach((e, i) => {
+    const d = Math.hypot(e.midX - x, e.midY - y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  });
+  return best;
+}
+
 // --- Bearing parsing ---------------------------------------------------
 
 function dmsToDecimalDegrees(deg: string, min?: string, sec?: string): number {
@@ -435,7 +502,17 @@ function bearingFromString(text: string): number | null {
   return null;
 }
 
-type BearingCandidate = { bearingDeg: number; x: number; y: number; rowIndex?: number };
+// `conflicted` marks a multi-fragment bearing whose own pieces don't agree
+// on which boundary edge they belong to -- see the conflict check in
+// bearingCandidatesFromVerticalColumns. A conflicted candidate is dropped
+// rather than guessed at, same fail-closed principle as everything else.
+type BearingCandidate = {
+  bearingDeg: number;
+  x: number;
+  y: number;
+  rowIndex?: number;
+  conflicted?: boolean;
+};
 
 // Case 1: a bearing whose fragments share one row -- horizontal labels
 // (typically the top/bottom sides of a plot) OCR this way. Scans each row
@@ -481,6 +558,7 @@ function bearingCandidatesFromRows(rows: OcrWord[][]): { candidates: BearingCand
 function bearingCandidatesFromVerticalColumns(
   words: OcrWord[],
   exclude: Set<OcrWord>,
+  edges: Edge[],
 ): BearingCandidate[] {
   const fragmentPattern = /^\d{1,3}$/;
   const symbolPattern = /^[°ºo'′"″]+$/;
@@ -519,7 +597,18 @@ function bearingCandidatesFromVerticalColumns(
       if (deg !== null) {
         const x = sorted.reduce((s, w) => s + w.x, 0) / sorted.length;
         const y = sorted.reduce((s, w) => s + w.y, 0) / sorted.length;
-        candidates.push({ bearingDeg: deg, x, y });
+
+        // Each fragment was written by the surveyor next to one specific
+        // edge. If the fragments making up this single bearing don't agree
+        // on which edge that is -- checked against edge midpoints derived
+        // from the reliably-read beacon positions, not against each other
+        // -- something is wrong with how they were grouped, so the whole
+        // candidate is marked and dropped downstream rather than guessed at.
+        const conflicted =
+          edges.length > 0 &&
+          new Set(sorted.map((w) => nearestEdgeIndex(w.x, w.y, edges))).size > 1;
+
+        candidates.push({ bearingDeg: deg, x, y, conflicted });
         break;
       }
     }
@@ -603,7 +692,12 @@ function pairNearestLegs(
   }
   for (const { bearings: rowBearings, distances: rowDistances } of rowCounts.values()) {
     if (rowBearings.length === 1 && rowDistances.length === 1) {
-      legs.push({ bearingDeg: rowBearings[0].bearingDeg, distanceM: rowDistances[0].distanceM });
+      legs.push({
+        bearingDeg: rowBearings[0].bearingDeg,
+        distanceM: rowDistances[0].distanceM,
+        x: rowBearings[0].x,
+        y: rowBearings[0].y,
+      });
       usedBearings.add(rowBearings[0]);
       usedDistances.add(rowDistances[0]);
     }
@@ -622,7 +716,7 @@ function pairNearestLegs(
       }
     });
     const [match] = remaining.splice(bestIdx, 1);
-    legs.push({ bearingDeg: bearing.bearingDeg, distanceM: match.distanceM });
+    legs.push({ bearingDeg: bearing.bearingDeg, distanceM: match.distanceM, x: bearing.x, y: bearing.y });
   }
 
   return legs;
@@ -671,6 +765,35 @@ function* permutations<T>(items: T[]): Generator<T[]> {
   }
 }
 
+type ClosingResult = { order: LegCandidate[]; closureError: number; points: Array<[number, number]> };
+
+// Greedily assigns each leg to the nearest not-yet-claimed edge in a given
+// (already rotated/directed) sequence of edge midpoints, by the leg's own
+// anchor position. Only used as a fallback for polygons too large for
+// exhaustive search -- for anything the permutation search can afford, that
+// remains the primary strategy, since it doesn't depend on legs carrying
+// position info or on beacon labels having been found at all.
+function assignLegsToEdgeSequence(legs: LegCandidate[], edgeSequence: Edge[]): LegCandidate[] | null {
+  if (legs.length !== edgeSequence.length) return null;
+  if (legs.some((l) => l.x === undefined || l.y === undefined)) return null;
+
+  const remaining = [...legs];
+  const ordered: LegCandidate[] = [];
+  for (const edge of edgeSequence) {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    remaining.forEach((leg, i) => {
+      const d = Math.hypot(leg.x! - edge.midX, leg.y! - edge.midY);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    });
+    ordered.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return ordered;
+}
+
 // The order legs were found in (page reading order) has no reliable
 // relationship to the order they actually connect around the boundary --
 // annotations are scattered around a drawing, not listed sequentially. So
@@ -684,17 +807,42 @@ function* permutations<T>(items: T[]): Generator<T[]> {
 // one enclosing the LARGEST area is kept, since a coincidentally-closing
 // degenerate path has a much smaller area than the true shape. The real
 // (tighter) closure tolerance is still enforced by the caller afterward.
+//
+// Above MAX_LEGS_FOR_PERMUTATION_SEARCH, exhaustive search is no longer
+// affordable (factorial growth), so beacon-position-derived edge order
+// (see edgesFromBeaconPositions) is tried instead -- every rotation and
+// both directions of the beacon-cyclic sequence, since which beacon in that
+// sequence corresponds to the known starting coordinate isn't itself known.
 function bestClosingOrder(
   start: [number, number],
   legs: LegCandidate[],
-): { order: LegCandidate[]; closureError: number; points: Array<[number, number]> } | null {
-  if (legs.length > MAX_LEGS_FOR_PERMUTATION_SEARCH) return null;
+  edges: Edge[] = [],
+): ClosingResult | null {
+  if (legs.length > MAX_LEGS_FOR_PERMUTATION_SEARCH) {
+    if (edges.length !== legs.length) return null;
+
+    let best: ClosingResult | null = null;
+    for (let rotation = 0; rotation < edges.length; rotation++) {
+      for (const direction of [1, -1] as const) {
+        const rotated = edges.map((_, i) => edges[(rotation + i * direction + edges.length) % edges.length]);
+        const assigned = assignLegsToEdgeSequence(legs, rotated);
+        if (!assigned) continue;
+
+        const traverse = walkTraverse(start, assigned);
+        const closureError = closureErrorMeters(start, traverse[traverse.length - 1]);
+        if (!best || closureError < best.closureError) {
+          best = { order: assigned, closureError, points: traverse.slice(0, -1) };
+        }
+      }
+    }
+    return best;
+  }
 
   const perimeter = legs.reduce((sum, l) => sum + l.distanceM, 0);
   const searchTolerance = Math.max(CLOSURE_TOLERANCE_MIN_M, perimeter * CLOSURE_TOLERANCE_RATIO) * 3;
 
-  let smallestError: { order: LegCandidate[]; closureError: number; points: Array<[number, number]> } | null = null;
-  let largestPlausible: { order: LegCandidate[]; closureError: number; points: Array<[number, number]>; area: number } | null = null;
+  let smallestError: ClosingResult | null = null;
+  let largestPlausible: (ClosingResult & { area: number }) | null = null;
 
   for (const order of permutations(legs)) {
     const traverse = walkTraverse(start, order);
@@ -835,10 +983,26 @@ export async function extractPlanPreview(
   const start = findStartCoordinateGlobal(words) ?? (pairs.length === 1 ? pairs[0] : null);
   if (start) {
     debugInfo.startPoint = start;
+    const beacons = extractBeaconPositions(words);
+    const edges = edgesFromBeaconPositions(beacons);
+    debugInfo.beaconCount = beacons.length;
+
     const scaleBar = scaleBarWords(rows);
     const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
     const excludedFromColumns = new Set([...scaleBar, ...consumed]);
-    const bearings = [...rowBearings, ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns)];
+    const allBearings = [
+      ...rowBearings,
+      ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns, edges),
+    ];
+
+    // A conflicted candidate's own fragments disagree on which edge they
+    // belong to -- dropped rather than guessed at, same principle as every
+    // other gate here. Tracked separately so a resulting shortfall can be
+    // reported as "found contradictory text" rather than "found nothing".
+    const bearings = allBearings.filter((b) => !b.conflicted);
+    const hadConflict = allBearings.some((b) => b.conflicted);
+    debugInfo.hadConflict = hadConflict;
+
     const distances = distanceCandidates(words, rows, scaleBar);
     const legs = pairNearestLegs(bearings, distances);
     debugInfo.legs = legs;
@@ -846,11 +1010,13 @@ export async function extractPlanPreview(
     // Distinct from "insufficient_coordinates": the plot's position was
     // found, it's the boundary itself that couldn't be read. Reporting both
     // as the same thing sends anyone debugging a plan down the wrong path.
+    // "conflicting_labels" is more specific still -- text was found, but it
+    // contradicted itself about which edge it belonged to.
     if (legs.length < MIN_POINTS) {
-      return unavailable("insufficient_legs");
+      return unavailable(hadConflict ? "conflicting_labels" : "insufficient_legs");
     }
 
-    const best = bestClosingOrder(start, legs);
+    const best = bestClosingOrder(start, legs, edges);
     if (!best) {
       return unavailable("too_many_legs");
     }
