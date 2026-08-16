@@ -141,9 +141,24 @@ async function fetchAsBase64(url: string): Promise<string> {
   return Buffer.from(buf).toString("base64");
 }
 
+// Uploaded images are hosted on Cloudinary, which already does on-the-fly
+// image transforms -- rather than fetching bytes ourselves and resizing
+// locally, ask Cloudinary for a larger version and point Vision at that
+// instead. `fl_relative` makes the width a multiplier of the *original*
+// image's own size, not an absolute pixel target, so a plan that's already
+// large is scaled up by the same proportion as a small one rather than
+// risking a fixed target accidentally shrinking it. Only meaningful for the
+// image path -- a PDF page's rasterization DPI is Vision's own internal
+// decision, not something a Cloudinary URL transform can reach.
+const UPSCALE_MULTIPLIER = 3;
+function upscaledCloudinaryUrl(url: string): string {
+  return url.replace("/image/upload/", `/image/upload/w_${UPSCALE_MULTIPLIER}.0,c_scale,fl_relative,q_100/`);
+}
+
 async function runVisionOcr(
   docUrl: string,
   apiKey: string,
+  upscale = false,
 ): Promise<{ words: OcrWord[]; avgConfidence: number | null; fullText: string }> {
   const isPdf = docUrl.toLowerCase().includes(".pdf");
 
@@ -169,13 +184,14 @@ async function runVisionOcr(
     return extractWordsAndConfidence(pageResponse);
   }
 
+  const imageUri = upscale ? upscaledCloudinaryUrl(docUrl) : docUrl;
   const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       requests: [
         {
-          image: { source: { imageUri: docUrl } },
+          image: { source: { imageUri } },
           features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
         },
       ],
@@ -1021,6 +1037,14 @@ function areaWithinTolerance(check: { statedM2: number; computedM2: number }): b
   return diff <= check.statedM2 * AREA_TOLERANCE_RATIO;
 }
 
+// Failure reasons plausibly caused by OCR genuinely not recognizing small
+// or faint text at the source image's native resolution -- worth a second
+// attempt at a higher resolution. Deliberately narrow: a wrong belt, an
+// area mismatch, or coordinates outside Nigeria have nothing to do with
+// image resolution, and retrying those would just waste a second Vision
+// call for a failure upscaling can't fix.
+const RESOLUTION_RETRYABLE_REASONS = new Set(["low_confidence", "insufficient_legs", "traverse_did_not_close"]);
+
 export async function extractPlanPreview(
   docUrl: string,
   state: string,
@@ -1031,11 +1055,42 @@ export async function extractPlanPreview(
     return { status: "unavailable", reason: "not_configured" };
   }
 
+  const native = await attemptExtraction(docUrl, state, includeDebug, apiKey, false);
+
+  // PDFs skip the retry: Vision rasterizes a PDF page internally at its own
+  // DPI, which a Cloudinary image-transform URL can't reach -- only a
+  // hosted raster image can be asked for a larger version of itself.
+  const isPdf = docUrl.toLowerCase().includes(".pdf");
+  if (
+    !isPdf &&
+    native.status === "unavailable" &&
+    RESOLUTION_RETRYABLE_REASONS.has(native.reason)
+  ) {
+    const upscaled = await attemptExtraction(docUrl, state, includeDebug, apiKey, true);
+    if (upscaled.status === "available") {
+      return upscaled;
+    }
+    // Neither resolution produced a result -- keep the native attempt's
+    // reason. It reflects what was actually legible without a guess about
+    // which of two failures is more "real," and stays consistent with what
+    // a debug dump at native resolution would already have shown.
+  }
+
+  return native;
+}
+
+async function attemptExtraction(
+  docUrl: string,
+  state: string,
+  includeDebug: boolean,
+  apiKey: string,
+  upscale: boolean,
+): Promise<PlanOcrResult> {
   let words: OcrWord[];
   let avgConfidence: number | null;
   let fullText: string;
   try {
-    ({ words, avgConfidence, fullText } = await runVisionOcr(docUrl, apiKey));
+    ({ words, avgConfidence, fullText } = await runVisionOcr(docUrl, apiKey, upscale));
   } catch (err) {
     console.error("[plan-ocr] Vision API call failed:", err);
     return { status: "unavailable", reason: "ocr_failed" };
