@@ -831,39 +831,84 @@ function bearingCandidatesFromVerticalColumns(
     else columns.push([w]);
   }
 
-  const candidates: BearingCandidate[] = [];
-  for (const column of columns) {
-    if (column.length < 2) continue;
-    const sorted = [...column].sort((a, b) => a.y - b.y);
-    const forward = sorted.map((w) => w.text).join("");
-    const backward = [...sorted].reverse().map((w) => w.text).join("");
-
+  // Tries both reading directions of a fragment run and returns the first
+  // one that parses as a bearing, along with whether its own fragments
+  // agree on which edge they belong to (see the conflict comment below).
+  function parseRun(run: OcrWord[]): (BearingCandidate & { fragmentCount: number }) | null {
+    const forward = run.map((w) => w.text).join("");
+    const backward = [...run].reverse().map((w) => w.text).join("");
     for (const candidate of [forward, backward]) {
       const parsed = bearingFromString(candidate);
       if (parsed !== null) {
-        const x = sorted.reduce((s, w) => s + w.x, 0) / sorted.length;
-        const y = sorted.reduce((s, w) => s + w.y, 0) / sorted.length;
-
-        // Each fragment was written by the surveyor next to one specific
-        // edge. If the fragments making up this single bearing don't agree
-        // on which edge that is -- checked against edge midpoints derived
-        // from the reliably-read beacon positions, not against each other
-        // -- something is wrong with how they were grouped, so the whole
-        // candidate is marked and dropped downstream rather than guessed at.
+        const x = run.reduce((s, w) => s + w.x, 0) / run.length;
+        const y = run.reduce((s, w) => s + w.y, 0) / run.length;
         const conflicted =
-          edges.length > 0 &&
-          new Set(sorted.map((w) => nearestEdgeIndex(w.x, w.y, edges))).size > 1;
-
-        candidates.push({
+          edges.length > 0 && new Set(run.map((w) => nearestEdgeIndex(w.x, w.y, edges))).size > 1;
+        return {
           bearingDeg: parsed.deg,
           x,
           y,
           conflicted,
           wholeCircle: parsed.wholeCircle,
           hasMinutes: parsed.hasMinutes,
-        });
-        break;
+          fragmentCount: run.length,
+        };
       }
+    }
+    return null;
+  }
+
+  // The longest run of Y-consecutive fragments that all agree on the same
+  // nearest edge. Single-linkage clustering has no way to know when a
+  // fragment it just absorbed actually belongs to a different label
+  // entirely -- a stray scale-bar tick or an unrelated bearing's orphaned
+  // minutes can land close enough in X/Y to join (confirmed live twice:
+  // lessons §22's "31" from a ZONE line, and a scale-bar "40" tick, both
+  // corrupting a genuine bearing this same way). The intruder can end up
+  // at either end of the run (leading, in §22's case; trailing here), but
+  // it's still just one end -- the genuine label's own fragments stay
+  // contiguous with each other. Finding that contiguous agreeing run
+  // recovers the real label instead of discarding the whole column over
+  // one outlier fragment.
+  function longestAgreeingRun(sorted: OcrWord[]): OcrWord[] | null {
+    if (edges.length === 0) return null;
+    const edgeIdx = sorted.map((w) => nearestEdgeIndex(w.x, w.y, edges));
+    let bestStart = 0;
+    let bestLen = 1;
+    let curStart = 0;
+    for (let i = 1; i <= sorted.length; i++) {
+      if (i === sorted.length || edgeIdx[i] !== edgeIdx[curStart]) {
+        if (i - curStart > bestLen) {
+          bestLen = i - curStart;
+          bestStart = curStart;
+        }
+        curStart = i;
+      }
+    }
+    if (bestLen < 2 || bestLen >= sorted.length) return null;
+    return sorted.slice(bestStart, bestStart + bestLen);
+  }
+
+  const candidates: BearingCandidate[] = [];
+  for (const column of columns) {
+    if (column.length < 2) continue;
+    const sorted = [...column].sort((a, b) => a.y - b.y);
+
+    const full = parseRun(sorted);
+    if (full && !full.conflicted) {
+      candidates.push(full);
+      continue;
+    }
+
+    // The whole column either didn't parse or disagrees on its edge --
+    // before giving up (or accepting a conflicted candidate that's just
+    // going to be dropped anyway), try the trimmed agreeing sub-run.
+    const trimmed = full?.conflicted ? longestAgreeingRun(sorted) : null;
+    const trimmedResult = trimmed ? parseRun(trimmed) : null;
+    if (trimmedResult && !trimmedResult.conflicted) {
+      candidates.push(trimmedResult);
+    } else if (full) {
+      candidates.push(full);
     }
   }
   return candidates;
@@ -949,10 +994,22 @@ function repairCrossBeaconMinutes(
 // A plan's scale bar reads as a row of small plain and "m"-suffixed
 // numbers -- exactly the shape a real distance candidate has, now that
 // WHOLE_METER_DISTANCE accepts unsuffixed-decimal whole numbers too (see
-// its comment). Two distinct real-world tick label styles seen so far:
-// a leading "m10"/"m5" tick ("m10 5 0 10 20 30 40m"), and a row that
-// simply counts up from a bare "0" ("20m 10 0 20 40 80m"). Neither shape
-// appears in genuine bearing/distance text, so either tell excludes the
+// its comment). Three distinct real-world tick label styles seen so far:
+// a leading "m10"/"m5" tick ("m10 5 0 10 20 30 40m"), a row that simply
+// counts up from a bare "0" ("20m 10 0 20 40 80m"), and a row whose
+// leading "0" tick OCR's fused together with the unit label into
+// something like "m.20" instead of either of the above -- caught not by
+// its own shape (garbled enough to not match anything specific) but by
+// the row still containing a bare, unattached "m" token elsewhere: real
+// bearing/distance text never has a free-floating "m" (it's always glued
+// directly to its number, e.g. "38.17m"), so a lone "m" alongside several
+// round tick numbers is as distinctive a tell as the other two. Confirmed
+// live: on one plan, this exact row's un-excluded "40" tick sat close
+// enough in X to a genuine "149°" bearing to get swept into its column
+// during clustering, corrupting it into an unparseable fragment and
+// silently destroying the whole bearing -- the same failure mode as
+// lessons §22's ZONE-31 collision, different culprit. Neither shape
+// appears in genuine bearing/distance text, so any tell excludes the
 // whole row wholesale from both distance and bearing candidacy.
 function scaleBarWords(rows: OcrWord[][]): Set<OcrWord> {
   const excluded = new Set<OcrWord>();
@@ -960,7 +1017,8 @@ function scaleBarWords(rows: OcrWord[][]): Set<OcrWord> {
     const hasPrefixedTick = row.some((w) => /^m\d+(\.\d+)?$/i.test(w.text));
     const smallNumbers = row.filter((w) => /^\d{1,3}m?$/i.test(w.text));
     const hasZeroTick = smallNumbers.some((w) => w.text === "0");
-    if (hasPrefixedTick || (hasZeroTick && smallNumbers.length >= 3)) {
+    const hasLoneUnitLabel = row.some((w) => w.text === "m") && smallNumbers.length >= 3;
+    if (hasPrefixedTick || (hasZeroTick && smallNumbers.length >= 3) || hasLoneUnitLabel) {
       row.forEach((w) => excluded.add(w));
     }
   }
