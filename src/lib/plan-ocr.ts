@@ -120,6 +120,12 @@ const BARE_INTEGER_DISTANCE = /^\d{1,4}m?$/i;
 // would corrupt the edge geometry below, and missing a genuine beacon just
 // degrades to the existing behavior, so under-matching is the safe failure.
 const BEACON_LABEL = /^[A-Z]{2}\d{4}[A-Z]{2}$/i;
+// A beacon label is sometimes printed as three stacked lines ("SC/OG"
+// above, the number in the middle, a 2-letter suffix below) and OCRs as
+// two separate tokens instead of one clean label -- a 2-letter+4-digit
+// prefix and its trailing 2-letter suffix. See repairSplitBeaconLabels.
+const BEACON_PREFIX = /^[A-Z]{2}\d{4}$/i;
+const BEACON_SUFFIX = /^[A-Z]{2}$/i;
 const MAX_BEARING_TOKEN_SPAN = 4;
 // Expressed as multiples of the page's median word height rather than fixed
 // pixels -- see medianWordHeight's comment. Calibrated against a real plan
@@ -541,8 +547,36 @@ function pairsFromRows(rows: OcrWord[][]): Array<[number, number]> {
 // seeing which drawn line a label actually sits along.
 type Edge = { midX: number; midY: number };
 
+// Only accepts a suffix that's both close and strictly *below* the
+// prefix -- the suffix is always the bottom line of the label's 3-line
+// stack ("SC/OG" above, the number in the middle, the suffix below), and
+// on a real plan "OG" from that "SC/OG" line can sit just as close
+// *above* the number as the real suffix sits below it. BEACON_LABEL's own
+// strictness (deliberately avoiding a false geometry-corrupting match)
+// only holds if the repair feeding it is equally careful about which
+// neighbor it accepts.
+function repairSplitBeaconLabels(words: OcrWord[]): Array<{ x: number; y: number }> {
+  const scale = medianWordHeight(words);
+  const radius = scale * 2.5;
+
+  const repaired: Array<{ x: number; y: number }> = [];
+  for (const prefix of words) {
+    if (!BEACON_PREFIX.test(prefix.text)) continue;
+
+    const hasSuffixBelow = words.some((suffix) => {
+      if (suffix === prefix || !BEACON_SUFFIX.test(suffix.text)) return false;
+      const dx = suffix.x - prefix.x;
+      const dy = suffix.y - prefix.y;
+      return dy > 0 && dy <= radius && Math.abs(dx) <= radius;
+    });
+    if (hasSuffixBelow) repaired.push({ x: prefix.x, y: prefix.y });
+  }
+  return repaired;
+}
+
 function extractBeaconPositions(words: OcrWord[]): Array<{ x: number; y: number }> {
-  return words.filter((w) => BEACON_LABEL.test(w.text)).map((w) => ({ x: w.x, y: w.y }));
+  const whole = words.filter((w) => BEACON_LABEL.test(w.text)).map((w) => ({ x: w.x, y: w.y }));
+  return [...whole, ...repairSplitBeaconLabels(words)];
 }
 
 // Beacons are drawn at roughly their true relative positions on the page --
