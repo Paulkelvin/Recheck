@@ -360,3 +360,47 @@ through a compressing app. Don't assume a resolution-shaped problem is a
 resolution *fix* without testing against a real failing case first — the
 pixel dimensions alone (768×1024 vs 2400px+) looked like exactly the
 kind of gap upscaling should close, and empirically it mostly didn't.
+
+## 20. A genuinely clear scan can still fail for reasons that have nothing to do with clarity
+
+A high-resolution, sharp screenshot (Sweet Nutrition Ltd, Ado-Odo/Ota)
+still failed outright (`insufficient_coordinates`, then `insufficient_legs`
+after the first fix) — worth recording because it's a useful contrast to
+§19: not every failure is an image-quality problem, and assuming it is
+without checking the actual OCR output wastes time chasing the wrong fix.
+Two distinct, real parsing gaps, both found only by reading the raw word
+positions:
+
+- **The grid coordinate's unit suffix split into its own token.**
+  "742 152.689 mN" OCR'd as three separate words — "742", "152.689",
+  "mN" — with the suffix disconnected even from the decimal fragment,
+  not just from the thousands-prefix that `resolveGridValue` (§3) already
+  repairs. `NORTHING_TOKEN`/`EASTING_TOKEN` require the suffix and digits
+  in one token, so this plan matched zero of either. Fixed by finding the
+  nearest decimal-shaped fragment to a bare "mN"/"mE" token and feeding
+  that into the *existing* thousands-prefix repair unchanged — the two
+  splits are really the same underlying problem (a number, or its
+  qualifier, separated from a piece of itself) and didn't need two
+  different mechanisms.
+- **A beacon label split into a prefix and a suffix token.** The label's
+  three printed lines ("SC/OG" / "FC2285" / "JX") sometimes OCR the
+  number and suffix as two words instead of one, so `BEACON_LABEL`
+  (which requires the whole thing in one token, deliberately, since a
+  false match would corrupt the geometry) matched none of this plan's
+  4 beacons. Fixed by accepting a prefix if a suffix sits close by and
+  *strictly below* it — not just nearest — because the real plan's own
+  "OG" text one line above the number sits about as close as the genuine
+  suffix one line below, and picking the nearest neighbor alone would
+  have been right only by luck.
+
+Both fixes verified against this plan's actual captured OCR words before
+and after deploying (§9, §18). Even after both, this plan still doesn't
+preview — only 2 of 4 legs are found, and the raw OCR output shows one
+bearing's degree symbol ("41°") never recognized as text at all despite
+the scan's excellent overall quality, plus a minutes fragment ("30'")
+too far from its own degree number to cluster with it, getting mistaken
+for a standalone bearing and stealing the wrong leg's distance pairing —
+the same known fragment-ambiguity limitation as §6b/§14. Two real,
+distinct, fixable bugs in one plan doesn't mean *all* of a plan's
+problems share one root cause — keep diagnosing each remaining gap on
+its own evidence rather than assuming the rest is "more of the same."
