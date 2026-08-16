@@ -982,6 +982,28 @@ function areaWords(rows: OcrWord[][]): Set<OcrWord> {
   return excluded;
 }
 
+// A plan's stated projection origin line ("ORIGIN:- U.T.M (ZONE 31)")
+// prints a bare 1-2 digit zone number with the exact shape a bearing
+// fragment has -- and left unexcluded, it's real observed damage: on one
+// plan, "31" from this exact line coincidentally shared a bearing
+// fragment's X-coordinate, so the vertical-column clustering (single-
+// linkage, no way to reconsider once a wrong fragment is absorbed -- see
+// bearingCandidatesFromVerticalColumns) swept "31" into that column
+// first, corrupting the whole read and destroying a genuine "149°"
+// bearing along with it. Same exclusion principle as scaleBarWords and
+// areaWords: the row's tell ("ORIGIN" or "ZONE" appearing in it) is
+// reliable enough to exclude wholesale, since neither word appears in
+// genuine bearing/distance text.
+function originWords(rows: OcrWord[][]): Set<OcrWord> {
+  const excluded = new Set<OcrWord>();
+  for (const row of rows) {
+    if (row.some((w) => /^ORIGIN[:\-]*$/i.test(w.text) || /^ZONE$/i.test(w.text))) {
+      row.forEach((w) => excluded.add(w));
+    }
+  }
+  return excluded;
+}
+
 type DistanceCandidate = { distanceM: number; x: number; y: number; rowIndex?: number };
 
 // Distances are searched for anywhere on the page, not row-restricted --
@@ -1461,8 +1483,9 @@ async function attemptExtraction(
 
     const scaleBar = scaleBarWords(rows);
     const areaRow = areaWords(rows);
+    const originRow = originWords(rows);
     const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
-    const excludedFromColumns = new Set([...scaleBar, ...areaRow, ...consumed]);
+    const excludedFromColumns = new Set([...scaleBar, ...areaRow, ...originRow, ...consumed]);
     const rawBearings = [
       ...rowBearings,
       ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns, edges),

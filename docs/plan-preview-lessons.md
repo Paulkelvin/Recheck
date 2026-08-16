@@ -475,14 +475,30 @@ as any valid bearing, so the whole column was silently discarded --
 taking the genuine "149°" down with it, since a fragment can only belong
 to one column.
 
-Not fixed this session -- the two X-coordinate collision (a totally
-unrelated header field landing on the same column as a real bearing
-fragment) is narrow enough, and any fix broad enough to catch it (e.g.
-trying every contiguous sub-window of a column, not just the whole
-thing) risks new false-positive merges elsewhere, the same class of risk
-weighed off in §14/§15. Recorded as a known, precisely-diagnosed gap
-rather than guessed at further -- if it recurs on another plan, that's
-the signal it's common enough to be worth the broader, riskier fix.
+**Fixed in §24** -- once the exact colliding source (the plan's own
+projection-origin line) was identified, it turned out to have the same
+shape as every other false-candidacy source already handled here: a
+specific, reliably-identifiable row whose whole contents could safely be
+excluded up front, the same principle as scaleBarWords (§) and areaWords
+(§11), rather than a general fix to the clustering algorithm itself.
+
+## 24. The projection-origin line ("ORIGIN:- ... ZONE 31") needs the same row-exclusion treatment as the scale bar and area figure
+
+§22's diagnosis (an unrelated "31" from "ORIGIN:- U.T.M (ZONE 31)"
+coincidentally sharing a bearing fragment's X-coordinate, greedily
+absorbed by single-linkage column clustering, destroying the real "149°"
+bearing along with it) pointed at a fix once the source was named:
+`detectProjection` already scans for this exact line's "ZONE 31/32" text
+to pick a projection -- so the line's presence and contents were never
+in question, only its collision with bearing-fragment candidacy. Added
+`originWords()`, structurally identical to `areaWords()`: any row
+containing "ORIGIN" or "ZONE" is excluded wholesale from vertical-column
+bearing candidacy, the same "reliable tell → exclude the whole row"
+principle as the scale bar and area figure before it. Left out of
+`distanceCandidates`'s exclusion set deliberately -- a bare zone number
+has no decimal point and no "m" suffix, so it was never a distance-
+candidacy risk in the first place; only bearing-fragment clustering
+needed the fix.
 
 ## 23. A bearing split across two beacons is still findable -- through the edge it belongs to, not through proximity
 
