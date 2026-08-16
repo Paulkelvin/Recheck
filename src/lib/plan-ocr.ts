@@ -80,13 +80,17 @@ const MAX_GRID_VALUE = 2_000_000;
 // check a surveyor uses to validate their own fieldwork.
 const QUADRANT_BEARING = /^([NS])(\d{1,2})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?([EW])$/i;
 const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+)?)?["″]?$/;
-// A page-wide distance candidate requires a decimal point (an "m" suffix is
-// allowed but not required) -- real survey distances are conventionally
-// recorded to decimal precision, e.g. "18.24m" or "30.00", and requiring
-// the decimal point is what makes a page-wide search safe without row/table
-// context: a bare whole number (a scale-bar tick like "40m", a plan
-// reference) has none.
+// A page-wide distance candidate needs a decimal point (an "m" suffix
+// allowed but not required, e.g. "18.24m" or "30.00") OR, for a genuinely
+// whole-metre distance a surveyor didn't bother giving a ".00" to, a
+// mandatory "m" suffix instead (e.g. "37m") -- a real plan won't always
+// round its distances. The "m" is what keeps the whole-number case safe
+// page-wide without row/table context: a bare unsuffixed number (a plan
+// reference, a beacon count) has none. This still isn't airtight against
+// a plan's own scale bar (a real one prints "37m"-shaped tick labels too),
+// so scaleBarWords's row exclusion has to be trustworthy -- see its comment.
 const DISTANCE_CANDIDATE = /^\d{1,4}\.\d{1,3}m?$/i;
+const WHOLE_METER_DISTANCE = /^\d{1,4}m$/i;
 // A distance's decimal point sometimes drops into its own OCR token
 // ("47m" + ".00" instead of one "47.00m" token) -- the same
 // token-splitting failure DISTANCE_CANDIDATE's whole-number half would
@@ -111,13 +115,6 @@ const MAX_BEARING_TOKEN_SPAN = 4;
 // and minute fragments.
 const VERTICAL_CLUSTER_X_TOLERANCE_RATIO = 2.2;
 const VERTICAL_CLUSTER_MAX_Y_GAP_RATIO = 24;
-// Road right-of-way width labels ("50' ROAD") use the exact same bare
-// digit + minute-symbol token shape as a bearing's minute fragment, printed
-// close to the word "ROAD". Calibrated against a real plan where the
-// closest such pair was 55px apart in Y with a 23px median word height
-// (ratio ~2.4) -- 3.5x leaves margin without reaching the 24x column Y-gap,
-// so it can't accidentally swallow a genuine same-column bearing fragment.
-const ROAD_LABEL_PROXIMITY_RATIO = 3.5;
 // How far apart (in X) a bearing and distance in the "same row" can be and
 // still plausibly be one written-together phrase, not two unrelated labels
 // that happen to share a Y-band. Deliberately generous relative to a single
@@ -600,21 +597,8 @@ function bearingCandidatesFromVerticalColumns(
   const symbolPattern = /^[°ºo'′"″]+$/;
   const scale = medianWordHeight(words);
 
-  // Road right-of-way width labels ("50' ROAD") are printed as a bare
-  // digit next to a minute-symbol, right beside the word "ROAD" -- the
-  // exact token shape a bearing-minute fragment has. Drop any fragment
-  // found within a few word-heights of a "ROAD" token before clustering,
-  // so it can't get pulled into an unrelated edge's bearing column.
-  const roadWords = words.filter((w) => /^ROAD$/i.test(w.text));
-  const roadRadius = scale * ROAD_LABEL_PROXIMITY_RATIO;
-  const nearRoadLabel = (w: OcrWord) =>
-    roadWords.some((r) => Math.abs(r.x - w.x) <= roadRadius && Math.abs(r.y - w.y) <= roadRadius);
-
   const fragments = words.filter(
-    (w) =>
-      !exclude.has(w) &&
-      (fragmentPattern.test(w.text) || symbolPattern.test(w.text)) &&
-      !nearRoadLabel(w),
+    (w) => !exclude.has(w) && (fragmentPattern.test(w.text) || symbolPattern.test(w.text)),
   );
 
   const xTolerance = scale * VERTICAL_CLUSTER_X_TOLERANCE_RATIO;
@@ -666,16 +650,21 @@ function bearingCandidatesFromVerticalColumns(
   return candidates;
 }
 
-// A plan's scale bar ("m10 5 0 10 20 30 40m") reads as a row of small
-// plain and "m"-suffixed numbers -- exactly the shape a real distance
-// candidate has. Its distinctive tell is the leading "m10"/"m5"-style tick
-// label (a bare "m" immediately followed by digits, not found in normal
-// distance or bearing text), so any row containing one is excluded wholesale
-// from both distance and bearing candidacy.
+// A plan's scale bar reads as a row of small plain and "m"-suffixed
+// numbers -- exactly the shape a real distance candidate has, now that
+// WHOLE_METER_DISTANCE accepts unsuffixed-decimal whole numbers too (see
+// its comment). Two distinct real-world tick label styles seen so far:
+// a leading "m10"/"m5" tick ("m10 5 0 10 20 30 40m"), and a row that
+// simply counts up from a bare "0" ("20m 10 0 20 40 80m"). Neither shape
+// appears in genuine bearing/distance text, so either tell excludes the
+// whole row wholesale from both distance and bearing candidacy.
 function scaleBarWords(rows: OcrWord[][]): Set<OcrWord> {
   const excluded = new Set<OcrWord>();
   for (const row of rows) {
-    if (row.some((w) => /^m\d+(\.\d+)?$/i.test(w.text))) {
+    const hasPrefixedTick = row.some((w) => /^m\d+(\.\d+)?$/i.test(w.text));
+    const smallNumbers = row.filter((w) => /^\d{1,3}m?$/i.test(w.text));
+    const hasZeroTick = smallNumbers.some((w) => w.text === "0");
+    if (hasPrefixedTick || (hasZeroTick && smallNumbers.length >= 3)) {
       row.forEach((w) => excluded.add(w));
     }
   }
@@ -713,7 +702,7 @@ function distanceCandidates(
   rows.forEach((row, i) => row.forEach((w) => rowIndexOf.set(w, i)));
 
   return words
-    .filter((w) => !exclude.has(w) && DISTANCE_CANDIDATE.test(w.text))
+    .filter((w) => !exclude.has(w) && (DISTANCE_CANDIDATE.test(w.text) || WHOLE_METER_DISTANCE.test(w.text)))
     .map((w) => ({
       distanceM: Number(w.text.replace(/m$/i, "")),
       x: w.x,
