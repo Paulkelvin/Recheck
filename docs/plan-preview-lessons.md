@@ -483,3 +483,43 @@ thing) risks new false-positive merges elsewhere, the same class of risk
 weighed off in §14/§15. Recorded as a known, precisely-diagnosed gap
 rather than guessed at further -- if it recurs on another plan, that's
 the signal it's common enough to be worth the broader, riskier fix.
+
+## 23. A bearing split across two beacons is still findable -- through the edge it belongs to, not through proximity
+
+Confirmed common (not an edge case): a surveyor prints a bearing's
+degrees at one beacon and its minutes at the far end of the same edge,
+the other beacon. Every existing bearing-assembly pass (row-based §-,
+vertical-column §2) works by clustering fragments that are physically
+*close together* -- exactly the property this pattern doesn't have. The
+two halves can be hundreds of pixels apart with unrelated text in
+between.
+
+The fix reuses machinery already built for a different purpose: beacon
+label positions → `edgesFromBeaconPositions` → `nearestEdgeIndex`,
+originally added so a multi-fragment bearing could be checked for
+self-consistency (§ conflicted-candidate logic). An edge's midpoint sits
+geometrically between its two endpoint beacons, so a degrees fragment
+near one beacon and a minutes fragment near the other are each
+*individually* nearest to the same edge midpoint -- even though they're
+nowhere near *each other*. That shared edge, not pixel distance, is what
+links them. `repairCrossBeaconMinutes` finds every unclaimed minutes
+fragment (fused `23'` token, or split `23` + `'` reassembled the same
+way `resolveGridValue` reassembles a split grid value), maps each to its
+nearest edge, and splices it into any degrees-only candidate that's
+independently nearest to that same edge.
+
+Deliberately scoped to stay fail-closed:
+
+- **Whole-circle bearings only** ("149°23'"), not quadrant ("N51°30'E").
+  A quadrant bearing is converted to its 0-360 value immediately on
+  parse, and whether adding minutes should increase or decrease that
+  value depends on which quadrant it was -- information already gone by
+  the time a candidate reaches the repair step. Guessing the sign risks
+  silently moving the plotted boundary; the safe fallback is to leave a
+  quadrant candidate as degrees-only rather than splice a maybe-wrong
+  direction into it.
+- **Only fires on an unambiguous edge match** -- exactly one orphan
+  minutes fragment mapped to exactly one degrees-only candidate's edge.
+  If two candidates or two fragments both land on the same edge, nothing
+  is spliced; a leftover degrees-only bearing is still usable (just less
+  precise), same as before this fix existed.

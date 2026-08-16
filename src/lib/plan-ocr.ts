@@ -131,6 +131,16 @@ const BEACON_LABEL = /^[A-Z]{2}\d{4}[A-Z]{2}$/i;
 // prefix and its trailing 2-letter suffix. See repairSplitBeaconLabels.
 const BEACON_PREFIX = /^[A-Z]{2}\d{4}$/i;
 const BEACON_SUFFIX = /^[A-Z]{2}$/i;
+// A bearing's minutes, printed at the OTHER beacon from its degrees --
+// see repairCrossBeaconMinutes below. Only the fused single-token shape
+// ("23'") is matched directly; the digit and prime symbol splitting into
+// two separate tokens is handled by searching from a bare 1-2 digit
+// fragment to a nearby lone prime-symbol token, the same "reassemble a
+// physically separated piece" pattern as resolveGridValue and
+// repairSplitDecimalDistances.
+const ORPHAN_MINUTE_TOKEN = /^(\d{1,2})['′]$/;
+const BARE_MINUTE_DIGITS = /^\d{1,2}$/;
+const LONE_PRIME_SYMBOL = /^['′]$/;
 const MAX_BEARING_TOKEN_SPAN = 4;
 // Expressed as multiples of the page's median word height rather than fixed
 // pixels -- see medianWordHeight's comment. Calibrated against a real plan
@@ -702,17 +712,25 @@ function quadrantToWholeCircle(letter1: string, angle: number, letter2: string):
   return null;
 }
 
-function bearingFromString(text: string): number | null {
+// `wholeCircle` distinguishes a plain "149°23'"-style reading from a
+// quadrant one ("N51°30'E") -- see repairCrossBeaconMinutes below, which
+// only trusts the former. `hasMinutes` reflects whether the matched text
+// actually captured a minutes group, not just whether the resulting value
+// happens to be a whole number (a real bearing can legitimately have zero
+// minutes).
+type BearingParseResult = { deg: number; wholeCircle: boolean; hasMinutes: boolean };
+
+function bearingFromString(text: string): BearingParseResult | null {
   const quadrant = text.match(QUADRANT_BEARING);
   if (quadrant) {
     const angle = dmsToDecimalDegrees(quadrant[2], quadrant[3], quadrant[4]);
     const wcb = quadrantToWholeCircle(quadrant[1], angle, quadrant[5]);
-    if (wcb !== null) return wcb;
+    if (wcb !== null) return { deg: wcb, wholeCircle: false, hasMinutes: Boolean(quadrant[3]) };
   }
   const wholeCircle = text.match(WHOLE_CIRCLE_BEARING);
   if (wholeCircle) {
     const wcb = dmsToDecimalDegrees(wholeCircle[1], wholeCircle[2], wholeCircle[3]);
-    if (wcb >= 0 && wcb <= 360) return wcb;
+    if (wcb >= 0 && wcb <= 360) return { deg: wcb, wholeCircle: true, hasMinutes: Boolean(wholeCircle[2]) };
   }
   return null;
 }
@@ -721,12 +739,17 @@ function bearingFromString(text: string): number | null {
 // on which boundary edge they belong to -- see the conflict check in
 // bearingCandidatesFromVerticalColumns. A conflicted candidate is dropped
 // rather than guessed at, same fail-closed principle as everything else.
+// `wholeCircle`/`hasMinutes` are carried from BearingParseResult so
+// repairCrossBeaconMinutes can find degrees-only candidates safe to
+// complete -- see its comment for why this is scoped to whole-circle only.
 type BearingCandidate = {
   bearingDeg: number;
   x: number;
   y: number;
   rowIndex?: number;
   conflicted?: boolean;
+  wholeCircle?: boolean;
+  hasMinutes?: boolean;
 };
 
 // Case 1: a bearing whose fragments share one row -- horizontal labels
@@ -747,13 +770,20 @@ function bearingCandidatesFromRows(rows: OcrWord[][]): { candidates: BearingCand
     for (let i = 0; i < texts.length; i++) {
       for (let span = 1; span <= MAX_BEARING_TOKEN_SPAN && i + span <= texts.length; span++) {
         const joined = texts.slice(i, i + span).join("").replace(/\s+/g, "");
-        const deg = bearingFromString(joined);
-        if (deg !== null) {
+        const parsed = bearingFromString(joined);
+        if (parsed !== null) {
           const consumedWords = row.slice(i, i + span);
           consumedWords.forEach((w) => consumed.add(w));
           const x = consumedWords.reduce((s, w) => s + w.x, 0) / consumedWords.length;
           const y = consumedWords.reduce((s, w) => s + w.y, 0) / consumedWords.length;
-          candidates.push({ bearingDeg: deg, x, y, rowIndex });
+          candidates.push({
+            bearingDeg: parsed.deg,
+            x,
+            y,
+            rowIndex,
+            wholeCircle: parsed.wholeCircle,
+            hasMinutes: parsed.hasMinutes,
+          });
           break;
         }
       }
@@ -809,8 +839,8 @@ function bearingCandidatesFromVerticalColumns(
     const backward = [...sorted].reverse().map((w) => w.text).join("");
 
     for (const candidate of [forward, backward]) {
-      const deg = bearingFromString(candidate);
-      if (deg !== null) {
+      const parsed = bearingFromString(candidate);
+      if (parsed !== null) {
         const x = sorted.reduce((s, w) => s + w.x, 0) / sorted.length;
         const y = sorted.reduce((s, w) => s + w.y, 0) / sorted.length;
 
@@ -824,12 +854,96 @@ function bearingCandidatesFromVerticalColumns(
           edges.length > 0 &&
           new Set(sorted.map((w) => nearestEdgeIndex(w.x, w.y, edges))).size > 1;
 
-        candidates.push({ bearingDeg: deg, x, y, conflicted });
+        candidates.push({
+          bearingDeg: parsed.deg,
+          x,
+          y,
+          conflicted,
+          wholeCircle: parsed.wholeCircle,
+          hasMinutes: parsed.hasMinutes,
+        });
         break;
       }
     }
   }
   return candidates;
+}
+
+// Some surveyors print a bearing's degrees at one beacon and its minutes at
+// the OTHER beacon of the same edge -- confirmed common on real plans, not
+// an edge case. The degrees-only candidate and the orphaned minutes
+// fragment never cluster together by pixel proximity (that's the whole
+// problem), but an edge's midpoint sits between both its endpoint beacons,
+// so both fragments still end up nearest to the SAME edge even though
+// they're nowhere near each other. That shared edge is the link: find each
+// unclaimed minutes fragment's nearest edge, and if a degrees-only
+// candidate is also nearest to that same edge, splice the minutes in.
+//
+// Deliberately narrow, same fail-closed principle as everywhere else here:
+// - Only wholeCircle candidates ("149°23'") are touched. A quadrant
+//   bearing (N51°30'E) is converted to its 0-360 value before it ever
+//   reaches this function, and whether adding minutes should increase or
+//   decrease that value depends on which quadrant it was -- information
+//   already gone by this point. Guessing the sign risks a silently wrong
+//   plot, so quadrant candidates are left as-is.
+// - Only fires when exactly one orphan minute fragment maps to an edge. If
+//   two candidates or two fragments both claim the same edge, it's
+//   ambiguous which belongs to which, so nothing is spliced.
+function repairCrossBeaconMinutes(
+  candidates: BearingCandidate[],
+  words: OcrWord[],
+  consumed: Set<OcrWord>,
+  edges: Edge[],
+): BearingCandidate[] {
+  if (edges.length === 0) return candidates;
+
+  const scale = medianWordHeight(words);
+  const closeGap = scale * 1.7;
+  const lineWidth = scale * 10;
+
+  const orphanMinutes: Array<{ minutes: number; edgeIndex: number }> = [];
+
+  for (const w of words) {
+    if (consumed.has(w)) continue;
+    const fused = w.text.match(ORPHAN_MINUTE_TOKEN);
+    if (fused) {
+      orphanMinutes.push({ minutes: Number(fused[1]), edgeIndex: nearestEdgeIndex(w.x, w.y, edges) });
+    }
+  }
+
+  // Split case: a bare digit fragment and a lone prime symbol as two
+  // separate tokens, the same physically-separated-piece pattern as
+  // resolveGridValue's thousands-prefix search.
+  const primeSymbols = words.filter((w) => !consumed.has(w) && LONE_PRIME_SYMBOL.test(w.text));
+  for (const digit of words) {
+    if (consumed.has(digit) || !BARE_MINUTE_DIGITS.test(digit.text)) continue;
+    let nearestPrime: OcrWord | null = null;
+    let nearestDist = Infinity;
+    for (const prime of primeSymbols) {
+      const dx = prime.x - digit.x;
+      const dy = prime.y - digit.y;
+      const sameLine = Math.abs(dy) <= closeGap && Math.abs(dx) <= lineWidth;
+      if (!sameLine) continue;
+      const dist = Math.hypot(dx, dy);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestPrime = prime;
+      }
+    }
+    if (nearestPrime) {
+      orphanMinutes.push({ minutes: Number(digit.text), edgeIndex: nearestEdgeIndex(digit.x, digit.y, edges) });
+    }
+  }
+
+  if (orphanMinutes.length === 0) return candidates;
+
+  return candidates.map((c) => {
+    if (!c.wholeCircle || c.hasMinutes || c.conflicted) return c;
+    const edgeIndex = nearestEdgeIndex(c.x, c.y, edges);
+    const matches = orphanMinutes.filter((o) => o.edgeIndex === edgeIndex);
+    if (matches.length !== 1) return c;
+    return { ...c, bearingDeg: c.bearingDeg + matches[0].minutes / 60, hasMinutes: true };
+  });
 }
 
 // A plan's scale bar reads as a row of small plain and "m"-suffixed
@@ -1349,10 +1463,16 @@ async function attemptExtraction(
     const areaRow = areaWords(rows);
     const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
     const excludedFromColumns = new Set([...scaleBar, ...areaRow, ...consumed]);
-    const allBearings = [
+    const rawBearings = [
       ...rowBearings,
       ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns, edges),
     ];
+
+    // Degrees at one beacon, minutes at the other end of the same edge --
+    // see repairCrossBeaconMinutes. Runs before the conflict filter below,
+    // since a repaired candidate is exactly as trustworthy as one whose
+    // minutes were found alongside its degrees.
+    const allBearings = repairCrossBeaconMinutes(rawBearings, words, excludedFromColumns, edges);
 
     // A conflicted candidate's own fragments disagree on which edge they
     // belong to -- dropped rather than guessed at, same principle as every
