@@ -190,3 +190,89 @@ webhook/callback verification needs to bind the external proof to the
 internal record explicitly (here: match against the ID stamped into
 Paystack's metadata when the transaction was created), not just check the
 proof is internally valid.
+
+## 11. A stated total (area, count, anything) needs the same exclusion as a scale bar
+
+A plan's stated total AREA figure ("AREA:- 4346.275 SQ. METRES") has the
+exact numeric shape a distance candidate has, and nothing excluded it —
+it got parsed as a boundary distance outright. The fix mirrors the
+existing scale-bar exclusion: find the row containing the label word
+("AREA") and exclude the whole row from candidacy. **Any self-describing
+total on a plan is a candidate for this same failure mode** — if a new
+number-shaped label type shows up (a lot count, a reference number), ask
+whether it needs the same row-exclusion treatment before it silently
+leaks into geometry.
+
+## 12. An annotation system that shares a token shape with real data will get confused with it
+
+Road right-of-way width labels ("50' ROAD") use the exact same bare-digit
++ minute-symbol shape as a bearing's minute fragment, printed right next
+to the word "ROAD". Fixed by excluding fragments found within a few
+word-heights of a "ROAD" token before column-clustering runs. General
+lesson: **any annotation system on a survey plan that isn't the
+bearing/distance traverse is a latent confound** if its token shapes
+overlap with what the parser is looking for. The road-width case was
+found only by inspecting raw word positions on one real plan — there is
+no way to enumerate these in advance; watch for them empirically.
+
+## 13. A decimal point can OCR as its own token, just like a thousands space (see §3)
+
+"47.00m" sometimes splits into two tokens — "47m" and a lone ".00" —
+neither of which matches the distance regex (which requires the digits
+and the decimal point in one token). This is the same failure family as
+§3's thousands-space split, just around the decimal point instead of a
+thousands separator. Fixed the same way: search outward from the
+distinctive fragment (a lone ".NNN" token is rare enough to be a safe
+anchor, unlike a bare digit) for its matching half, rather than loosening
+the page-wide regex itself.
+
+Not every split is recoverable this way — a genuinely whole-number
+distance ("37m", no decimal at all) that never got a fractional-part
+token has no anchor to search from. Loosening the regex to accept bare
+whole numbers page-wide would reintroduce exactly the ambiguity §3 and
+the DISTANCE_CANDIDATE comment exist to prevent (a bare number is
+indistinguishable from a scale-bar tick or plan reference without more
+context). Declining to recover it and letting the traverse fail closed
+is the correct behavior here, not a remaining bug — see §8.
+
+## 14. Nearest-neighbor pairing must be globally greedy, not per-item greedy
+
+`pairNearestLegs`'s fallback loop iterated bearings in array order and
+grabbed whichever distance was nearest *at that point in the loop*. If an
+earlier bearing's true match was already claimed by something else, or a
+later bearing's true distance simply doesn't exist as a candidate (see
+§13), the earlier bearing could steal a distance that rightfully belonged
+to the later one — and that one theft cascades into every remaining pair
+being wrong. Fixed by collecting all remaining (bearing, distance) pairs,
+sorting by distance ascending, and assigning greedily in that global
+order instead: the truly closest pairs lock in first regardless of
+iteration order, and an item with no real match is left unpaired rather
+than forced onto someone else's. This is a generic assignment-problem
+fix, not plan-specific — any greedy nearest-neighbor matching in this
+codebase should default to globally-sorted-greedy, not iterate-and-grab.
+
+## 15. A shared Y-band is not evidence of a real relationship
+
+`groupIntoRows` groups purely by Y-proximity, with no X constraint at
+all — correct for a genuine table row, but on a wide scattered drawing
+two completely unrelated labels (different edges, ~330px apart in X) can
+land in the same Y-band by coincidence. `pairNearestLegs`'s "same row is
+unambiguous" shortcut trusted this blindly and force-paired a bearing
+with a distance that belonged to a different edge, before the
+nearest-neighbor fallback (which would have gotten it right, per §14)
+ever ran. Fixed by requiring the row's bearing and distance to also sit
+within a plausible same-phrase X gap — a bearing and distance actually
+written together are a handful of words apart, not hundreds of pixels.
+General lesson: a heuristic that groups by one axis only is exploitable
+by coincidence on the other axis; if the grouped items are later assumed
+to be *related* (not just *nearby*), check proximity on every axis that
+relationship would actually require, not just the one the grouping used.
+
+## 16. When live-testing the POST pipeline, use the POST method
+
+Burned real time this session re-running `?force=1&debug=1` with a plain
+GET request (curl's default) — the route's `force`/`debug` flags are only
+read inside the POST handler; GET just returns the four cached DB
+columns with no `debug` field at all. The symptom (empty debug info, no
+error) looked like a deploy hadn't landed yet, not a wrong HTTP verb.
+Always `curl -X POST` against this endpoint when diagnosing.
