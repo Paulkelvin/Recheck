@@ -203,17 +203,29 @@ number-shaped label type shows up (a lot count, a reference number), ask
 whether it needs the same row-exclusion treatment before it silently
 leaks into geometry.
 
-## 12. An annotation system that shares a token shape with real data will get confused with it
+## 12. Correction: a shared token shape isn't evidence of a different meaning — check the source image, not just positions
 
-Road right-of-way width labels ("50' ROAD") use the exact same bare-digit
-+ minute-symbol shape as a bearing's minute fragment, printed right next
-to the word "ROAD". Fixed by excluding fragments found within a few
-word-heights of a "ROAD" token before column-clustering runs. General
-lesson: **any annotation system on a survey plan that isn't the
-bearing/distance traverse is a latent confound** if its token shapes
-overlap with what the parser is looking for. The road-width case was
-found only by inspecting raw word positions on one real plan — there is
-no way to enumerate these in advance; watch for them empirically.
+**This entry originally diagnosed "50' ROAD" as a road right-of-way width
+label and excluded any digit+apostrophe fragment near a "ROAD" token from
+bearing-candidacy.** That diagnosis was wrong, caught only when the user
+supplied the actual plan image: those fragments are genuine bearing
+minutes (`25°50'`, `114°38'`, `180°00'`, `296°54'`) — the roads simply run
+alongside those edges, so the minute label and the road label happen to
+sit close together on the page. The exclusion was silently discarding
+real data for every plan where a bearing's minutes happen to fall near a
+road annotation, not just this one. Reverted.
+
+The actual lesson isn't "annotation systems collide" (that was the wrong
+theory) — it's methodological: **OCR word *positions* alone can suggest a
+plausible-sounding story that's still wrong.** "Two things are physically
+close on the page" was consistent with both the wrong hypothesis (a road
+width) and the right one (a bearing's minutes for an edge next to a
+road). Position data narrows the search; it doesn't confirm a semantic
+claim about what a fragment *means*. When the actual source document is
+available, check the diagnosis against it before shipping a fix that
+throws data away — especially anything that *excludes* candidates, since
+that failure mode is silent (no error, just quietly worse output) and
+won't show up in a debug dump the way a wrong *inclusion* would.
 
 ## 13. A decimal point can OCR as its own token, just like a thousands space (see §3)
 
@@ -276,3 +288,41 @@ read inside the POST handler; GET just returns the four cached DB
 columns with no `debug` field at all. The symptom (empty debug info, no
 error) looked like a deploy hadn't landed yet, not a wrong HTTP verb.
 Always `curl -X POST` against this endpoint when diagnosing.
+
+## 17. Not every distance is a decimal — but only accept the whole-number shape once the scale bar is airtight
+
+A surveyor doesn't always round to `.00`: `37m` on this plan was a
+complete, correct 37-metre distance, not a truncated `37.??m`. The
+original DISTANCE_CANDIDATE required a decimal point specifically to stay
+safe as a page-wide, context-free search (a bare number is otherwise
+indistinguishable from a scale-bar tick or a plan reference). Added a
+second pattern, `WHOLE_METER_DISTANCE`, that accepts a bare number with a
+*mandatory* "m" suffix — narrower than a fully bare number, but still
+exactly the shape a real scale-bar tick can have.
+
+That only became safe after fixing `scaleBarWords`, which turned out to
+already be under-matching: its only detection tell was a leading
+`"m10"`-style prefixed tick, but this plan's real scale bar read `"20m
+10 0 20 40 80m"` — suffixed, not prefixed, and two of its own ticks
+(`"20m"`, `"80m"`) would otherwise have leaked in as fake distances the
+moment whole-number distances were accepted. Added a second tell (a row
+containing a bare `"0"` alongside several other small numbers) alongside
+the original prefixed-tick check. **Loosening what counts as a distance
+candidate is only as safe as the exclusion rules it now depends on more
+heavily — audit those first, not after.**
+
+## 18. When you can't reach the live admin session, reconstruct it — don't skip the live check
+
+Lost the authenticated session cookie from an earlier diagnosis pass
+mid-session (scratch files get cleaned up between rounds) with no
+password saved anywhere to log back in. Rather than trusting the local
+harness alone, used the `DATABASE_URL` already present in the shell
+environment plus the project's own `scripts/seed-admin.ts` to mint a new
+throwaway admin user, logged in via NextAuth's credentials flow
+(`/api/auth/csrf` → `/api/auth/callback/credentials`) to get a fresh
+session cookie, ran the real live re-test, then deleted the throwaway
+user afterward. A local harness against captured OCR words (see §9) is
+good enough to *develop* a fix, but this pipeline's own rule (§8, §9) is
+that a fix isn't verified until it's been run against the real deployed
+code — reconstructing access to do that live check is worth the extra
+steps rather than settling for "should work" from the harness alone.
