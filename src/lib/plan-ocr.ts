@@ -222,21 +222,21 @@ async function runVisionOcr(
     assertNoVisionError(pageResponse);
     const result = extractWordsAndConfidence(pageResponse);
     if (result.words.length === 0) {
+      const fta = (pageResponse as { fullTextAnnotation?: { pages?: unknown[]; text?: string } } | undefined)
+        ?.fullTextAnnotation;
+      const firstPage = fta?.pages?.[0] as
+        | { blocks?: Array<{ paragraphs?: unknown[] }>; width?: number; height?: number }
+        | undefined;
       return {
         ...result,
         visionDiagnostic: {
-          hasFileResponse: Boolean(fileResponse),
-          hasPageResponse: Boolean(pageResponse),
-          fileResponseKeys: fileResponse ? Object.keys(fileResponse) : null,
-          pageResponseKeys: pageResponse ? Object.keys(pageResponse) : null,
-          totalPages: (fileResponse as { totalPages?: number } | undefined)?.totalPages ?? null,
-          hasFullTextAnnotation: Boolean(
-            (pageResponse as { fullTextAnnotation?: unknown } | undefined)?.fullTextAnnotation,
-          ),
-          fullTextAnnotationKeys: (pageResponse as { fullTextAnnotation?: object } | undefined)
-            ?.fullTextAnnotation
-            ? Object.keys((pageResponse as { fullTextAnnotation: object }).fullTextAnnotation)
-            : null,
+          pagesLength: fta?.pages?.length ?? null,
+          firstPageKeys: firstPage ? Object.keys(firstPage) : null,
+          firstPageDimensions: firstPage ? { width: firstPage.width, height: firstPage.height } : null,
+          firstPageBlocksLength: firstPage?.blocks?.length ?? null,
+          firstBlockKeys: firstPage?.blocks?.[0] ? Object.keys(firstPage.blocks[0]) : null,
+          firstBlockParagraphsLength: firstPage?.blocks?.[0]?.paragraphs?.length ?? null,
+          textSample: fta?.text?.slice(0, 300) ?? null,
         },
       };
     }
