@@ -326,3 +326,37 @@ good enough to *develop* a fix, but this pipeline's own rule (§8, §9) is
 that a fix isn't verified until it's been run against the real deployed
 code — reconstructing access to do that live check is worth the extra
 steps rather than settling for "should work" from the harness alone.
+
+## 19. Upscaling before OCR: real fix for some plans, not a fix for "small pixels" per se
+
+Shipped a retry that asks Cloudinary for a 3x-larger version of an
+already-hosted plan image and re-runs Vision against that, gated to only
+fire on failures that plausibly stem from unrecognized text
+(`low_confidence`, `insufficient_legs`, `traverse_did_not_close`) so a
+failure that has nothing to do with resolution doesn't burn a second
+Vision call for no reason.
+
+Tested against two real plans that fail this way — 768×1024 and 467×728px
+scans, both roughly a third the linear resolution of a plan that already
+works. The retry barely moved the needle: +6 words out of 190 on one,
++1 word out of 160 on the other, and no new bearing digits recovered on
+either. **The lesson isn't "upscaling doesn't work" — it's that upscaling
+only helps when the missing detail is still physically present in the
+pixels, just too few of them.** A photo this small, with this little
+recoverable detail after a 3x resize, is more consistent with detail
+having been destroyed *before* upload — most likely aggressive
+compression from a messaging app (WhatsApp is notorious for
+down-sampling and re-encoding forwarded images) rather than the camera
+capture itself. Upscaling a blurred, compression-smeared region just
+produces a bigger blurred region; there's no missing information left to
+recover by adding pixels.
+
+Practically: the retry stayed in the pipeline anyway, since it's cheap
+when it doesn't fire and may still rescue a genuinely-just-small (not
+also blurred/recompressed) scan. But for *this* class of failure, the
+real fix isn't more code — it's the intake side: ask the user for the
+original camera photo or a proper scan, not a copy that's already passed
+through a compressing app. Don't assume a resolution-shaped problem is a
+resolution *fix* without testing against a real failing case first — the
+pixel dimensions alone (768×1024 vs 2400px+) looked like exactly the
+kind of gap upscaling should close, and empirically it mostly didn't.
