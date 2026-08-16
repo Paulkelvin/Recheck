@@ -229,7 +229,10 @@ async function runVisionOcr(
         | undefined;
       const firstParagraph = firstPage?.blocks?.[0]?.paragraphs?.[0];
       const firstWord = firstParagraph?.words?.[0] as
-        | { symbols?: Array<{ text?: string }>; boundingBox?: unknown }
+        | {
+            symbols?: Array<{ text?: string }>;
+            boundingBox?: { vertices?: unknown[]; normalizedVertices?: unknown[] };
+          }
         | undefined;
       return {
         ...result,
@@ -238,11 +241,12 @@ async function runVisionOcr(
           firstPageDimensions: firstPage ? { width: firstPage.width, height: firstPage.height } : null,
           firstPageBlocksLength: firstPage?.blocks?.length ?? null,
           firstBlockParagraphsLength: firstPage?.blocks?.[0]?.paragraphs?.length ?? null,
-          firstParagraphKeys: firstParagraph ? Object.keys(firstParagraph) : null,
           firstParagraphWordsLength: firstParagraph?.words?.length ?? null,
-          firstWordKeys: firstWord ? Object.keys(firstWord) : null,
           firstWordSymbols: firstWord?.symbols ?? null,
-          firstWordHasBoundingBox: Boolean(firstWord?.boundingBox),
+          firstWordBoundingBoxKeys: firstWord?.boundingBox ? Object.keys(firstWord.boundingBox) : null,
+          firstWordVerticesLength: firstWord?.boundingBox?.vertices?.length ?? null,
+          firstWordNormalizedVerticesLength: firstWord?.boundingBox?.normalizedVertices?.length ?? null,
+          firstWordNormalizedVerticesSample: firstWord?.boundingBox?.normalizedVertices ?? null,
           textSample: fta?.text?.slice(0, 300) ?? null,
         },
       };
