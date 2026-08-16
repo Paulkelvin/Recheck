@@ -404,3 +404,82 @@ the same known fragment-ambiguity limitation as §6b/§14. Two real,
 distinct, fixable bugs in one plan doesn't mean *all* of a plan's
 problems share one root cause — keep diagnosing each remaining gap on
 its own evidence rather than assuming the rest is "more of the same."
+
+## 21. Two account-level infrastructure gaps had nothing to do with OCR at all
+
+Testing a plan uploaded as a PDF surfaced two bugs entirely outside the
+parsing logic — worth its own entry because both would have been
+misdiagnosed as "OCR can't handle this document" without checking
+outside `plan-ocr.ts` first.
+
+**Cloudinary was blocking delivery of the PDF itself.** Fetching the
+uploaded PDF's own URL returned `401 — deny or ACL failure`, even though
+the identical account served images fine. This is Cloudinary's
+"Restricted media types" security setting, which most accounts ship with
+enabled by default (PDFs/ZIPs can carry executable content). This
+doesn't just break the free OCR preview -- it breaks the paid product
+too: the admin/surveyor review page links straight to the raw Cloudinary
+URL, so a buyer submitting a PDF made their plan invisible to their own
+paid reviewer, not just to the automated pipeline. Fixed on the account
+side (Cloudinary Console → Settings → Security), not in code. **When a
+document-type-specific failure shows up, check whether every *other*
+place that type of file gets used is equally broken before assuming the
+parser is at fault** — a hosting/delivery problem looks identical to a
+content problem from inside the OCR code alone.
+
+**Once that was fixed, Vision's PDF response used a completely different
+bounding-box field than the image response, and the code only knew
+about one of them.** `images:annotate` (the JPG/PNG path) returns each
+word's box as `vertices` -- absolute pixel coordinates. `files:annotate`
+(the PDF path) returns `normalizedVertices` instead -- 0-1 fractions of
+the page. `extractWordsAndConfidence` only ever read `vertices`, so
+*every PDF ever uploaded* silently produced zero words: real text, real
+per-word confidence scores, a complete `fullTextAnnotation.text` matching
+the plan exactly -- all present and correct, just filed under a field
+name the code never checked. No error, no low-confidence signal, nothing
+distinguishing it from "this document genuinely has no text." This was
+the single highest-impact bug found this session, and it was invisible
+from the outside: everything about the failure (`insufficient_coordinates`
+or `ocr_failed`, depending on which check tripped first) looked exactly
+like a document-quality problem.
+
+Found only by adding a temporary, purpose-built diagnostic field
+(`visionDiagnostic`, gated to only populate when word count is zero and
+no error was thrown) and walking one response level deeper on each
+redeploy -- `hasFullTextAnnotation` → `pagesLength`/`blocksLength` →
+`paragraphWordsLength` → `boundingBoxKeys` -- until the actual field name
+mismatch was visible. **When a black-box API returns "success, but
+nothing," don't guess at the shape from documentation alone; make the
+response's actual shape observable, one level at a time, through
+whatever channel is already available** (here: the existing `debug=1`
+endpoint, since server logs weren't reachable). The fix itself, once the
+real shape was visible, was small: fall back to `normalizedVertices`
+scaled by the page's own reported width/height whenever `vertices` is
+empty.
+
+## 22. A coincidental X-alignment with unrelated page text can steal fragments from a real bearing
+
+Diagnosed why one plan's `149°` bearing produced zero candidates even
+though both its fragments ("149" and "°") were individually present and
+correctly recognized. The vertical-column clustering (§2) is greedy
+single-linkage: each fragment, processed in Y order, joins whichever
+existing column's *most recently added* member is close enough in X and
+Y — with no way to reconsider once a wrong fragment has been absorbed.
+On this plan, an unrelated "31" (from "ORIGIN:- U.T.M (ZONE 31)", far
+above on the page) happened to sit at the exact same X as "149". Since
+83px separated them -- well inside the deliberately generous 24×-height
+Y-gap tolerance real rotated labels need -- "149" joined "31"'s column
+first, then "°" joined that same column right after. The merged
+three-fragment read ("31149°" forward, "°14931" backward) doesn't parse
+as any valid bearing, so the whole column was silently discarded --
+taking the genuine "149°" down with it, since a fragment can only belong
+to one column.
+
+Not fixed this session -- the two X-coordinate collision (a totally
+unrelated header field landing on the same column as a real bearing
+fragment) is narrow enough, and any fix broad enough to catch it (e.g.
+trying every contiguous sub-window of a column, not just the whole
+thing) risks new false-positive merges elsewhere, the same class of risk
+weighed off in §14/§15. Recorded as a known, precisely-diagnosed gap
+rather than guessed at further -- if it recurs on another plan, that's
+the signal it's common enough to be worth the broader, riskier fix.
