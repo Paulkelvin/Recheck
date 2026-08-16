@@ -74,6 +74,14 @@ const GRID_PREFIX_TOKEN = /^\d{1,3}$/;
 // Nigerian grid values are 6-7 digits; anything outside this is a bad join.
 const MIN_GRID_VALUE = 100_000;
 const MAX_GRID_VALUE = 2_000_000;
+// Sometimes the split goes further: the "mN"/"mE" suffix OCRs as its own
+// bare token, disconnected even from the decimal fragment it belongs to,
+// not just from the thousands-prefix (e.g. "742" / "152.689" / "mN" as
+// three separate words instead of "742" / "152.689mN"). See
+// findOrphanUnitAnchor below.
+const BARE_NORTHING_UNIT = /^mN$/i;
+const BARE_EASTING_UNIT = /^mE$/i;
+const DECIMAL_GRID_FRAGMENT = /^\d{1,3}\.\d{1,3}$/;
 
 // Most Nigerian survey plans don't list every beacon's absolute coordinate --
 // they give one starting beacon's Easting/Northing, then a "traverse": a
@@ -435,17 +443,63 @@ function resolveGridValue(token: OcrWord, raw: string, words: OcrWord[]): number
   return best?.value ?? null;
 }
 
-function findStartCoordinateGlobal(words: OcrWord[]): [number, number] | null {
-  const northings = words.filter((w) => NORTHING_TOKEN.test(w.text));
-  const eastings = words.filter((w) => EASTING_TOKEN.test(w.text));
-  if (northings.length !== 1 || eastings.length !== 1) return null;
+// When a grid label's unit suffix OCRs as its own standalone token (no
+// digits attached at all), find the nearest decimal-shaped fragment and
+// treat it as though the suffix had been glued onto it -- so
+// resolveGridValue's existing thousands-prefix search can take over from
+// there completely unchanged. Same left-of/stacked-above search as
+// resolveGridValue itself, since both are really the same problem: a
+// number that got physically separated from a piece of itself.
+function findOrphanUnitAnchor(words: OcrWord[], unitPattern: RegExp, scale: number): OcrWord | null {
+  const unit = words.find((w) => unitPattern.test(w.text));
+  if (!unit) return null;
 
-  const northing = resolveGridValue(
-    northings[0],
-    northings[0].text.match(NORTHING_TOKEN)![1],
-    words,
-  );
-  const easting = resolveGridValue(eastings[0], eastings[0].text.match(EASTING_TOKEN)![1], words);
+  const closeGap = scale * 1.7;
+  const lineWidth = scale * 10;
+  let best: { word: OcrWord; distance: number } | null = null;
+  for (const w of words) {
+    if (w === unit || !DECIMAL_GRID_FRAGMENT.test(w.text)) continue;
+    const dx = unit.x - w.x;
+    const dy = unit.y - w.y;
+    const sameLine = Math.abs(dy) <= closeGap && Math.abs(dx) <= lineWidth;
+    const sameColumn = Math.abs(dx) <= closeGap && Math.abs(dy) <= lineWidth;
+    if (!sameLine && !sameColumn) continue;
+
+    const distance = Math.hypot(dx, dy);
+    if (!best || distance < best.distance) best = { word: w, distance };
+  }
+  return best?.word ?? null;
+}
+
+function findStartCoordinateGlobal(words: OcrWord[]): [number, number] | null {
+  const scale = medianWordHeight(words);
+
+  const northings = words.filter((w) => NORTHING_TOKEN.test(w.text));
+  let northingAnchor: OcrWord | null = null;
+  let northingRaw: string | null = null;
+  if (northings.length === 1) {
+    northingAnchor = northings[0];
+    northingRaw = northings[0].text.match(NORTHING_TOKEN)![1];
+  } else if (northings.length === 0) {
+    northingAnchor = findOrphanUnitAnchor(words, BARE_NORTHING_UNIT, scale);
+    northingRaw = northingAnchor?.text ?? null;
+  }
+  if (!northingAnchor || !northingRaw) return null;
+
+  const eastings = words.filter((w) => EASTING_TOKEN.test(w.text));
+  let eastingAnchor: OcrWord | null = null;
+  let eastingRaw: string | null = null;
+  if (eastings.length === 1) {
+    eastingAnchor = eastings[0];
+    eastingRaw = eastings[0].text.match(EASTING_TOKEN)![1];
+  } else if (eastings.length === 0) {
+    eastingAnchor = findOrphanUnitAnchor(words, BARE_EASTING_UNIT, scale);
+    eastingRaw = eastingAnchor?.text ?? null;
+  }
+  if (!eastingAnchor || !eastingRaw) return null;
+
+  const northing = resolveGridValue(northingAnchor, northingRaw, words);
+  const easting = resolveGridValue(eastingAnchor, eastingRaw, words);
   if (northing === null || easting === null) return null;
 
   return [easting, northing];
