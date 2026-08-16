@@ -288,7 +288,7 @@ function assertNoVisionError(response: unknown): void {
 type VisionVertex = { x?: number; y?: number };
 type VisionWord = {
   confidence?: number;
-  boundingBox?: { vertices?: VisionVertex[] };
+  boundingBox?: { vertices?: VisionVertex[]; normalizedVertices?: VisionVertex[] };
   symbols?: Array<{ text?: string }>;
 };
 
@@ -307,6 +307,8 @@ function extractWordsAndConfidence(response: unknown): {
     fullTextAnnotation?: {
       text?: string;
       pages?: Array<{
+        width?: number;
+        height?: number;
         blocks?: Array<{ paragraphs?: Array<{ words?: VisionWord[] }> }>;
       }>;
     };
@@ -316,11 +318,31 @@ function extractWordsAndConfidence(response: unknown): {
   const confidences: number[] = [];
 
   for (const page of r?.fullTextAnnotation?.pages ?? []) {
+    // A PDF/file input (see runVisionOcr's isPdf branch) returns each
+    // word's box as `normalizedVertices` -- 0-1 fractions of the page --
+    // instead of the absolute-pixel `vertices` an image input returns.
+    // Vision picks the shape based on input type, not something the
+    // request controls, and treating an absent `vertices` as "no box"
+    // silently dropped every single word for a PDF: text, confidence, and
+    // structure were all there, just not under the field this code
+    // checked. Scale the normalized form by the page's own reported
+    // dimensions so everything downstream works in one consistent space
+    // regardless of which shape this particular response used.
+    const pageWidth = page.width ?? 1;
+    const pageHeight = page.height ?? 1;
+
     for (const block of page.blocks ?? []) {
       for (const para of block.paragraphs ?? []) {
         for (const word of para.words ?? []) {
           const text = (word.symbols ?? []).map((s) => s.text ?? "").join("");
-          const vertices = word.boundingBox?.vertices ?? [];
+          const rawVertices = word.boundingBox?.vertices;
+          const vertices =
+            rawVertices && rawVertices.length > 0
+              ? rawVertices
+              : (word.boundingBox?.normalizedVertices ?? []).map((v) => ({
+                  x: (v.x ?? 0) * pageWidth,
+                  y: (v.y ?? 0) * pageHeight,
+                }));
           if (!text || vertices.length === 0) continue;
 
           const ys = vertices.map((v) => v.y ?? 0);
