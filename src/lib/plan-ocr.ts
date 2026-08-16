@@ -102,6 +102,13 @@ const MAX_BEARING_TOKEN_SPAN = 4;
 // and minute fragments.
 const VERTICAL_CLUSTER_X_TOLERANCE_RATIO = 2.2;
 const VERTICAL_CLUSTER_MAX_Y_GAP_RATIO = 24;
+// Road right-of-way width labels ("50' ROAD") use the exact same bare
+// digit + minute-symbol token shape as a bearing's minute fragment, printed
+// close to the word "ROAD". Calibrated against a real plan where the
+// closest such pair was 55px apart in Y with a 23px median word height
+// (ratio ~2.4) -- 3.5x leaves margin without reaching the 24x column Y-gap,
+// so it can't accidentally swallow a genuine same-column bearing fragment.
+const ROAD_LABEL_PROXIMITY_RATIO = 3.5;
 // Closure tolerance: a real traverse should walk back to its starting
 // point. Allow up to 1% of the total perimeter or 2m, whichever is more
 // forgiving, to absorb ordinary OCR digit noise without accepting a
@@ -576,11 +583,25 @@ function bearingCandidatesFromVerticalColumns(
 ): BearingCandidate[] {
   const fragmentPattern = /^\d{1,3}$/;
   const symbolPattern = /^[°ºo'′"″]+$/;
+  const scale = medianWordHeight(words);
+
+  // Road right-of-way width labels ("50' ROAD") are printed as a bare
+  // digit next to a minute-symbol, right beside the word "ROAD" -- the
+  // exact token shape a bearing-minute fragment has. Drop any fragment
+  // found within a few word-heights of a "ROAD" token before clustering,
+  // so it can't get pulled into an unrelated edge's bearing column.
+  const roadWords = words.filter((w) => /^ROAD$/i.test(w.text));
+  const roadRadius = scale * ROAD_LABEL_PROXIMITY_RATIO;
+  const nearRoadLabel = (w: OcrWord) =>
+    roadWords.some((r) => Math.abs(r.x - w.x) <= roadRadius && Math.abs(r.y - w.y) <= roadRadius);
+
   const fragments = words.filter(
-    (w) => !exclude.has(w) && (fragmentPattern.test(w.text) || symbolPattern.test(w.text)),
+    (w) =>
+      !exclude.has(w) &&
+      (fragmentPattern.test(w.text) || symbolPattern.test(w.text)) &&
+      !nearRoadLabel(w),
   );
 
-  const scale = medianWordHeight(words);
   const xTolerance = scale * VERTICAL_CLUSTER_X_TOLERANCE_RATIO;
   const maxYGap = scale * VERTICAL_CLUSTER_MAX_Y_GAP_RATIO;
 
@@ -640,6 +661,21 @@ function scaleBarWords(rows: OcrWord[][]): Set<OcrWord> {
   const excluded = new Set<OcrWord>();
   for (const row of rows) {
     if (row.some((w) => /^m\d+(\.\d+)?$/i.test(w.text))) {
+      row.forEach((w) => excluded.add(w));
+    }
+  }
+  return excluded;
+}
+
+// A plan's stated total AREA figure ("AREA:- 4346.275 SQ. METRES") has the
+// exact numeric shape DISTANCE_CANDIDATE looks for -- decimal, 1-4 digits
+// before the point -- and left unexcluded gets treated as a real boundary
+// distance. Its tell is sharing a row with the word "AREA" itself, so
+// exclude that row wholesale, same principle as scaleBarWords.
+function areaWords(rows: OcrWord[][]): Set<OcrWord> {
+  const excluded = new Set<OcrWord>();
+  for (const row of rows) {
+    if (row.some((w) => /^-*AREA[:\-]*$/i.test(w.text))) {
       row.forEach((w) => excluded.add(w));
     }
   }
@@ -903,7 +939,7 @@ function withinNigeria(points: LatLng[]): boolean {
 // (e.g. "PLOT AREA:- 668.791 SQR.MTS"). Only used as a hard gate when a
 // stated area was actually found; absence of one isn't itself suspicious.
 function areaMismatch(fullText: string, points: Array<[number, number]>): { statedM2: number; computedM2: number } | null {
-  const match = fullText.match(/PLOT\s*AREA[:\-\s]*-?\s*(\d{2,7}(?:\.\d{1,3})?)/i);
+  const match = fullText.match(/(?:PLOT\s*)?AREA[:\-\s]*-?\s*(\d{2,7}(?:\.\d{1,3})?)/i);
   if (!match) return null;
   const statedM2 = Number(match[1]);
   if (!Number.isFinite(statedM2) || statedM2 <= 0) return null;
@@ -1002,8 +1038,9 @@ export async function extractPlanPreview(
     debugInfo.beaconCount = beacons.length;
 
     const scaleBar = scaleBarWords(rows);
+    const areaRow = areaWords(rows);
     const { candidates: rowBearings, consumed } = bearingCandidatesFromRows(rows);
-    const excludedFromColumns = new Set([...scaleBar, ...consumed]);
+    const excludedFromColumns = new Set([...scaleBar, ...areaRow, ...consumed]);
     const allBearings = [
       ...rowBearings,
       ...bearingCandidatesFromVerticalColumns(words, excludedFromColumns, edges),
@@ -1017,7 +1054,7 @@ export async function extractPlanPreview(
     const hadConflict = allBearings.some((b) => b.conflicted);
     debugInfo.hadConflict = hadConflict;
 
-    const distances = distanceCandidates(words, rows, scaleBar);
+    const distances = distanceCandidates(words, rows, new Set([...scaleBar, ...areaRow]));
     const legs = pairNearestLegs(bearings, distances);
     debugInfo.legs = legs;
 
