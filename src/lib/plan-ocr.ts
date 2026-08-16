@@ -199,7 +199,16 @@ async function runVisionOcr(
     });
     if (!res.ok) throw new Error(`Vision API error (${res.status})`);
     const data = await res.json();
-    const pageResponse = data.responses?.[0]?.responses?.[0];
+    // A whole-file failure (corrupted PDF, password protection, an
+    // encoding Vision can't parse) surfaces as an error on the file-level
+    // response -- a sibling of `responses[]`, not nested inside it the way
+    // a single page's error is. Skipping this check meant a failed file
+    // looked silently identical to "Vision read the page fine and found no
+    // text," the exact error-swallowing failure mode already fixed once
+    // for the image path.
+    const fileResponse = data.responses?.[0];
+    assertNoVisionError(fileResponse);
+    const pageResponse = fileResponse?.responses?.[0];
     assertNoVisionError(pageResponse);
     return extractWordsAndConfidence(pageResponse);
   }
