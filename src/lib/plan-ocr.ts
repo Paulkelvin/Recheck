@@ -87,6 +87,15 @@ const WHOLE_CIRCLE_BEARING = /^(\d{1,3})[°ºo](\d{1,2})?['′]?(\d{1,2}(?:\.\d+
 // context: a bare whole number (a scale-bar tick like "40m", a plan
 // reference) has none.
 const DISTANCE_CANDIDATE = /^\d{1,4}\.\d{1,3}m?$/i;
+// A distance's decimal point sometimes drops into its own OCR token
+// ("47m" + ".00" instead of one "47.00m" token) -- the same
+// token-splitting failure DISTANCE_CANDIDATE's whole-number half would
+// otherwise miss entirely. A lone ".NNN" fragment is distinctive enough
+// (unlike a bare digit, which is everywhere on a plan) to safely search
+// nearby for its matching whole-number part, same principle as
+// resolveGridValue's thousands-space repair below.
+const DECIMAL_FRAGMENT = /^\.\d{1,3}$/;
+const BARE_INTEGER_DISTANCE = /^\d{1,4}m?$/i;
 // Nigerian beacon labels observed on every real plan so far, from three
 // different surveyors/states: 2 letters + 4 digits + 2 letters
 // (DF8477YE, CA8698PE, AD6105GE). Deliberately strict -- a false match here
@@ -707,6 +716,41 @@ function distanceCandidates(
     }));
 }
 
+// Reconstructs distances whose decimal point OCR'd as its own token (see
+// DECIMAL_FRAGMENT above). Searches from each lone fragment outward --
+// the same left-of/stacked-above search resolveGridValue uses -- rather
+// than from every bare digit on the page, which would be unsafe: a plain
+// digit alone is indistinguishable from a scale-bar tick or plan number.
+function repairSplitDecimalDistances(words: OcrWord[], exclude: Set<OcrWord>): DistanceCandidate[] {
+  const scale = medianWordHeight(words);
+  const closeGap = scale * 1.7;
+  const lineWidth = scale * 10;
+
+  const repaired: DistanceCandidate[] = [];
+  for (const frag of words.filter((w) => !exclude.has(w) && DECIMAL_FRAGMENT.test(w.text))) {
+    let best: { word: OcrWord; distance: number } | null = null;
+    for (const candidate of words) {
+      if (candidate === frag || exclude.has(candidate) || !BARE_INTEGER_DISTANCE.test(candidate.text)) {
+        continue;
+      }
+      const dx = frag.x - candidate.x;
+      const dy = frag.y - candidate.y;
+      const sameLineToTheLeft = Math.abs(dy) <= closeGap && dx > 0 && dx <= lineWidth;
+      const stackedVertically = Math.abs(dx) <= closeGap && Math.abs(dy) <= lineWidth;
+      if (!sameLineToTheLeft && !stackedVertically) continue;
+
+      const distance = Math.hypot(dx, dy);
+      if (!best || distance < best.distance) best = { word: candidate, distance };
+    }
+    if (!best) continue;
+
+    const distanceM = Number(`${best.word.text.replace(/m$/i, "")}${frag.text}`);
+    if (!Number.isFinite(distanceM)) continue;
+    repaired.push({ distanceM, x: best.word.x, y: best.word.y });
+  }
+  return repaired;
+}
+
 // Pairs bearings with distances in two passes. First: any row that holds
 // exactly one row-based bearing and exactly one distance is paired directly
 // -- unambiguous, and immune to the second pass's failure mode (see below).
@@ -1054,7 +1098,11 @@ export async function extractPlanPreview(
     const hadConflict = allBearings.some((b) => b.conflicted);
     debugInfo.hadConflict = hadConflict;
 
-    const distances = distanceCandidates(words, rows, new Set([...scaleBar, ...areaRow]));
+    const distanceExclude = new Set([...scaleBar, ...areaRow]);
+    const distances = [
+      ...distanceCandidates(words, rows, distanceExclude),
+      ...repairSplitDecimalDistances(words, distanceExclude),
+    ];
     const legs = pairNearestLegs(bearings, distances);
     debugInfo.legs = legs;
 
