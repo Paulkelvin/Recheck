@@ -49,9 +49,6 @@ export function loadGoogleMaps(): Promise<void> {
 
     const w = window as unknown as Record<string, unknown>;
     w[CALLBACK_NAME] = () => settle(resolve);
-    // Google's documented hook for a key rejected at runtime (referrer not
-    // allowed, key invalid, billing off). Without this the callback simply
-    // never fires and the page waits for the timeout.
     w.gm_authFailure = () => settle(() => reject(new MapsLoadError("unavailable")));
 
     const script = document.createElement("script");
@@ -61,6 +58,9 @@ export function loadGoogleMaps(): Promise<void> {
     script.async = true;
     script.onerror = () => settle(() => reject(new MapsLoadError("unavailable")));
     document.head.appendChild(script);
+  }).catch((err) => {
+    loadPromise = null;
+    throw err;
   });
 
   return loadPromise;
