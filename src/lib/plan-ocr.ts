@@ -797,20 +797,36 @@ function pairNearestLegs(
     }
   }
 
-  const remaining = distances.filter((d) => !usedDistances.has(d));
-  for (const bearing of bearings) {
-    if (usedBearings.has(bearing) || remaining.length === 0) continue;
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    remaining.forEach((d, i) => {
-      const dist = Math.hypot(d.x - bearing.x, d.y - bearing.y);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
-      }
-    });
-    const [match] = remaining.splice(bestIdx, 1);
-    legs.push({ bearingDeg: bearing.bearingDeg, distanceM: match.distanceM, x: bearing.x, y: bearing.y });
+  // Global nearest-pair-first greedy, not "for each bearing in array order,
+  // take whatever's nearest right now": the latter lets an earlier bearing
+  // steal a distance that actually belongs to a later one, and when a
+  // genuine distance is missing entirely (unread or OCR-dropped), that one
+  // theft cascades into every remaining pairing being one distance off.
+  // Sorting every remaining (bearing, distance) pair by distance ascending
+  // and assigning greedily means the truly closest pairs lock in first
+  // regardless of iteration order, and a bearing with no real match just
+  // stays unpaired instead of being forced onto someone else's distance.
+  const remainingBearings = bearings.filter((b) => !usedBearings.has(b));
+  const remainingDistances = distances.filter((d) => !usedDistances.has(d));
+  const candidatePairs: Array<{ bearing: BearingCandidate; distance: DistanceCandidate; gap: number }> = [];
+  for (const bearing of remainingBearings) {
+    for (const distance of remainingDistances) {
+      candidatePairs.push({
+        bearing,
+        distance,
+        gap: Math.hypot(distance.x - bearing.x, distance.y - bearing.y),
+      });
+    }
+  }
+  candidatePairs.sort((a, b) => a.gap - b.gap);
+
+  const pairedBearings = new Set<BearingCandidate>();
+  const pairedDistances = new Set<DistanceCandidate>();
+  for (const { bearing, distance } of candidatePairs) {
+    if (pairedBearings.has(bearing) || pairedDistances.has(distance)) continue;
+    legs.push({ bearingDeg: bearing.bearingDeg, distanceM: distance.distanceM, x: bearing.x, y: bearing.y });
+    pairedBearings.add(bearing);
+    pairedDistances.add(distance);
   }
 
   return legs;
