@@ -43,6 +43,12 @@ type OcrDebugInfo = {
   areaCheck?: { statedM2: number; computedM2: number } | null;
   beaconCount?: number;
   hadConflict?: boolean;
+  upscaleRetry?: {
+    reason: string;
+    wordCount: number;
+    legs?: LegCandidate[];
+    resultReason?: string;
+  };
 };
 
 const MIN_CONFIDENCE = 0.6;
@@ -1073,7 +1079,23 @@ export async function extractPlanPreview(
     // Neither resolution produced a result -- keep the native attempt's
     // reason. It reflects what was actually legible without a guess about
     // which of two failures is more "real," and stays consistent with what
-    // a debug dump at native resolution would already have shown.
+    // a debug dump at native resolution would already have shown. Still
+    // surface what the retry itself found, when debugging -- otherwise a
+    // failed retry is indistinguishable from a retry that never ran.
+    if (includeDebug && native.debug && upscaled.debug) {
+      return {
+        ...native,
+        debug: {
+          ...native.debug,
+          upscaleRetry: {
+            reason: native.reason,
+            wordCount: upscaled.debug.words.length,
+            legs: upscaled.debug.legs,
+            resultReason: upscaled.status === "unavailable" ? upscaled.reason : undefined,
+          },
+        },
+      };
+    }
   }
 
   return native;
