@@ -225,17 +225,24 @@ async function runVisionOcr(
       const fta = (pageResponse as { fullTextAnnotation?: { pages?: unknown[]; text?: string } } | undefined)
         ?.fullTextAnnotation;
       const firstPage = fta?.pages?.[0] as
-        | { blocks?: Array<{ paragraphs?: unknown[] }>; width?: number; height?: number }
+        | { blocks?: Array<{ paragraphs?: Array<{ words?: unknown[] }> }>; width?: number; height?: number }
+        | undefined;
+      const firstParagraph = firstPage?.blocks?.[0]?.paragraphs?.[0];
+      const firstWord = firstParagraph?.words?.[0] as
+        | { symbols?: Array<{ text?: string }>; boundingBox?: unknown }
         | undefined;
       return {
         ...result,
         visionDiagnostic: {
           pagesLength: fta?.pages?.length ?? null,
-          firstPageKeys: firstPage ? Object.keys(firstPage) : null,
           firstPageDimensions: firstPage ? { width: firstPage.width, height: firstPage.height } : null,
           firstPageBlocksLength: firstPage?.blocks?.length ?? null,
-          firstBlockKeys: firstPage?.blocks?.[0] ? Object.keys(firstPage.blocks[0]) : null,
           firstBlockParagraphsLength: firstPage?.blocks?.[0]?.paragraphs?.length ?? null,
+          firstParagraphKeys: firstParagraph ? Object.keys(firstParagraph) : null,
+          firstParagraphWordsLength: firstParagraph?.words?.length ?? null,
+          firstWordKeys: firstWord ? Object.keys(firstWord) : null,
+          firstWordSymbols: firstWord?.symbols ?? null,
+          firstWordHasBoundingBox: Boolean(firstWord?.boundingBox),
           textSample: fta?.text?.slice(0, 300) ?? null,
         },
       };
