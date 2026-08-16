@@ -49,6 +49,11 @@ type OcrDebugInfo = {
     legs?: LegCandidate[];
     resultReason?: string;
   };
+  // Populated only when Vision returns zero words with no error at either
+  // level -- a shape summary of the raw response, since that combination
+  // (no error, no text) is otherwise a dead end to debug from the outside:
+  // there's nothing else in the normal result to say why.
+  visionDiagnostic?: Record<string, unknown>;
 };
 
 const MIN_CONFIDENCE = 0.6;
@@ -179,7 +184,12 @@ async function runVisionOcr(
   docUrl: string,
   apiKey: string,
   upscale = false,
-): Promise<{ words: OcrWord[]; avgConfidence: number | null; fullText: string }> {
+): Promise<{
+  words: OcrWord[];
+  avgConfidence: number | null;
+  fullText: string;
+  visionDiagnostic?: Record<string, unknown>;
+}> {
   const isPdf = docUrl.toLowerCase().includes(".pdf");
 
   if (isPdf) {
@@ -210,7 +220,27 @@ async function runVisionOcr(
     assertNoVisionError(fileResponse);
     const pageResponse = fileResponse?.responses?.[0];
     assertNoVisionError(pageResponse);
-    return extractWordsAndConfidence(pageResponse);
+    const result = extractWordsAndConfidence(pageResponse);
+    if (result.words.length === 0) {
+      return {
+        ...result,
+        visionDiagnostic: {
+          hasFileResponse: Boolean(fileResponse),
+          hasPageResponse: Boolean(pageResponse),
+          fileResponseKeys: fileResponse ? Object.keys(fileResponse) : null,
+          pageResponseKeys: pageResponse ? Object.keys(pageResponse) : null,
+          totalPages: (fileResponse as { totalPages?: number } | undefined)?.totalPages ?? null,
+          hasFullTextAnnotation: Boolean(
+            (pageResponse as { fullTextAnnotation?: unknown } | undefined)?.fullTextAnnotation,
+          ),
+          fullTextAnnotationKeys: (pageResponse as { fullTextAnnotation?: object } | undefined)
+            ?.fullTextAnnotation
+            ? Object.keys((pageResponse as { fullTextAnnotation: object }).fullTextAnnotation)
+            : null,
+        },
+      };
+    }
+    return result;
   }
 
   const imageUri = upscale ? upscaledCloudinaryUrl(docUrl) : docUrl;
@@ -1208,8 +1238,9 @@ async function attemptExtraction(
   let words: OcrWord[];
   let avgConfidence: number | null;
   let fullText: string;
+  let visionDiagnostic: Record<string, unknown> | undefined;
   try {
-    ({ words, avgConfidence, fullText } = await runVisionOcr(docUrl, apiKey, upscale));
+    ({ words, avgConfidence, fullText, visionDiagnostic } = await runVisionOcr(docUrl, apiKey, upscale));
   } catch (err) {
     console.error("[plan-ocr] Vision API call failed:", err);
     return { status: "unavailable", reason: "ocr_failed" };
@@ -1227,6 +1258,7 @@ async function attemptExtraction(
   // each return via `includeDebug ? debugInfo : undefined`.
   const debugInfo: OcrDebugInfo = {
     words,
+    visionDiagnostic,
     avgConfidence,
     rows: rows.map((r) => r.map((w) => w.text)),
     pairs,
