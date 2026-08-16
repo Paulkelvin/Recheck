@@ -118,6 +118,12 @@ const VERTICAL_CLUSTER_MAX_Y_GAP_RATIO = 24;
 // (ratio ~2.4) -- 3.5x leaves margin without reaching the 24x column Y-gap,
 // so it can't accidentally swallow a genuine same-column bearing fragment.
 const ROAD_LABEL_PROXIMITY_RATIO = 3.5;
+// How far apart (in X) a bearing and distance in the "same row" can be and
+// still plausibly be one written-together phrase, not two unrelated labels
+// that happen to share a Y-band. Deliberately generous relative to a single
+// fragment cluster's tolerance (2.2x) since this spans a multi-word phrase,
+// but tight enough to reject the ~330px false collision that motivated it.
+const ROW_PAIR_MAX_X_GAP_RATIO = 6;
 // Closure tolerance: a real traverse should walk back to its starting
 // point. Allow up to 1% of the total perimeter or 2m, whichever is more
 // forgiving, to absorb ordinary OCR digit noise without accepting a
@@ -766,10 +772,20 @@ function repairSplitDecimalDistances(words: OcrWord[], exclude: Set<OcrWord>): D
 function pairNearestLegs(
   bearings: BearingCandidate[],
   distances: DistanceCandidate[],
+  words: OcrWord[],
 ): LegCandidate[] {
   const legs: LegCandidate[] = [];
   const usedBearings = new Set<BearingCandidate>();
   const usedDistances = new Set<DistanceCandidate>();
+
+  // groupIntoRows bands purely by Y, with no X constraint -- fine for a
+  // genuine table row, but on a wide scattered drawing two unrelated
+  // labels for entirely different edges can land in the same Y-band by
+  // coincidence alone. Require them to also sit within a plausible
+  // same-phrase X distance before trusting a "same row" match; a bearing
+  // and distance actually written together ("N45°30'E 120.50m") are a
+  // handful of words apart, not hundreds of pixels.
+  const rowPairMaxXGap = medianWordHeight(words) * ROW_PAIR_MAX_X_GAP_RATIO;
 
   const rowCounts = new Map<number, { bearings: BearingCandidate[]; distances: DistanceCandidate[] }>();
   for (const b of bearings) {
@@ -785,7 +801,11 @@ function pairNearestLegs(
     rowCounts.set(d.rowIndex, entry);
   }
   for (const { bearings: rowBearings, distances: rowDistances } of rowCounts.values()) {
-    if (rowBearings.length === 1 && rowDistances.length === 1) {
+    if (
+      rowBearings.length === 1 &&
+      rowDistances.length === 1 &&
+      Math.abs(rowBearings[0].x - rowDistances[0].x) <= rowPairMaxXGap
+    ) {
       legs.push({
         bearingDeg: rowBearings[0].bearingDeg,
         distanceM: rowDistances[0].distanceM,
@@ -1119,7 +1139,7 @@ export async function extractPlanPreview(
       ...distanceCandidates(words, rows, distanceExclude),
       ...repairSplitDecimalDistances(words, distanceExclude),
     ];
-    const legs = pairNearestLegs(bearings, distances);
+    const legs = pairNearestLegs(bearings, distances, words);
     debugInfo.legs = legs;
 
     // Distinct from "insufficient_coordinates": the plot's position was
