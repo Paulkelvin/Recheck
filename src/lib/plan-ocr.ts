@@ -43,6 +43,12 @@ type OcrDebugInfo = {
   areaCheck?: { statedM2: number; computedM2: number } | null;
   beaconCount?: number;
   hadConflict?: boolean;
+  bestEffort?: {
+    missingEdgeIndex: number;
+    missingEdgeLengthM: number;
+    totalEdges: number;
+    usedLegs: number;
+  };
   upscaleRetry?: {
     reason: string;
     wordCount: number;
@@ -1359,6 +1365,128 @@ function bestClosingOrder(
   return largestPlausible ?? smallestError;
 }
 
+// --- Best-effort closure (exactly one edge unreadable) -------------------
+//
+// When a plot's beacon count says it has N sides but only N-1 legs were
+// ever read -- not misread, genuinely absent, e.g. a bearing whose degree
+// symbol never made it into the OCR text at all (see lessons on the
+// Sweet Nutrition plan) -- the missing edge isn't actually unknowable.
+// A closed polygon's edge vectors must sum to zero, so knowing the start
+// point and every OTHER edge determines the missing one by subtraction,
+// regardless of where in the walking order it falls.
+//
+// This deliberately trades away something real: the ordinary closure
+// check is the only thing in this whole pipeline that catches a
+// misread digit in a "confirmed" leg, and a shape solved this way closes
+// by construction no matter what those legs say -- so an error hiding in
+// one of them would no longer surface as a mismatch. That's why this is
+// only ever tried AFTER the real closure check has already failed, never
+// instead of it, and why the result is always disclosed to the caller as
+// best-effort rather than shown as an equally-trustworthy read.
+type BestEffortResult = {
+  points: Array<[number, number]>;
+  missingEdgeIndex: number;
+  missingEdgeLengthM: number;
+  totalEdges: number;
+  usedLegs: number;
+};
+
+// A floor and a generous ceiling (relative to the longest CONFIRMED leg)
+// on the solved-for edge's length. If closing the loop this way implies
+// an edge wildly longer than anything actually read off the plan, that's
+// a sign something else is wrong -- a misread digit in one of the
+// "confirmed" legs, a miscounted beacon -- not just one missing label,
+// so best-effort mode refuses rather than draw a shape built on a
+// nonsensical inferred edge. Same fail-closed principle as everywhere
+// else here, just with its own tolerance since there's no independent
+// measurement to check the inferred edge against.
+const BEST_EFFORT_MIN_EDGE_M = 1;
+const BEST_EFFORT_MAX_EDGE_RATIO = 3;
+
+function bestEffortClosingOrder(
+  start: [number, number],
+  legs: LegCandidate[],
+  edges: Edge[],
+): BestEffortResult | null {
+  if (edges.length < 3 || legs.length !== edges.length - 1) return null;
+  if (legs.some((l) => l.x === undefined || l.y === undefined)) return null;
+
+  // Same rotation/direction search as bestClosingOrder's beacon-fallback
+  // path, since which beacon the start coordinate corresponds to isn't
+  // known -- but scored by how well each known leg fits its assigned
+  // edge slot (closure is no longer a useful signal here: by
+  // construction, every candidate closes exactly once the gap is solved).
+  let best: { assignment: Array<LegCandidate | null>; cost: number } | null = null;
+
+  for (let rotation = 0; rotation < edges.length; rotation++) {
+    for (const direction of [1, -1] as const) {
+      const rotated = edges.map((_, i) => edges[(rotation + i * direction + edges.length) % edges.length]);
+      const remaining = [...legs];
+      const assignment: Array<LegCandidate | null> = new Array(rotated.length).fill(null);
+      let cost = 0;
+      for (let slot = 0; slot < rotated.length && remaining.length > 0; slot++) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        remaining.forEach((leg, i) => {
+          const d = Math.hypot(leg.x! - rotated[slot].midX, leg.y! - rotated[slot].midY);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        });
+        assignment[slot] = remaining[bestIdx];
+        cost += bestDist;
+        remaining.splice(bestIdx, 1);
+      }
+      if (remaining.length > 0) continue;
+      if (!best || cost < best.cost) best = { assignment, cost };
+    }
+  }
+
+  if (!best) return null;
+  const gapIndex = best.assignment.findIndex((a) => a === null);
+  if (gapIndex === -1) return null;
+
+  const n = best.assignment.length;
+
+  // Walk forward from start through the known legs BEFORE the gap.
+  const forwardPoints: Array<[number, number]> = [start];
+  for (let i = 0; i < gapIndex; i++) {
+    const leg = best.assignment[i]!;
+    const [e, nn] = forwardPoints[forwardPoints.length - 1];
+    const rad = (leg.bearingDeg * Math.PI) / 180;
+    forwardPoints.push([e + leg.distanceM * Math.sin(rad), nn + leg.distanceM * Math.cos(rad)]);
+  }
+
+  // Walk backward from start (subtracting each vector instead of adding
+  // it) through the known legs AFTER the gap, closing in on it from the
+  // other side.
+  const backwardPoints: Array<[number, number]> = [start];
+  for (let i = n - 1; i > gapIndex; i--) {
+    const leg = best.assignment[i]!;
+    const [e, nn] = backwardPoints[backwardPoints.length - 1];
+    const rad = (leg.bearingDeg * Math.PI) / 180;
+    backwardPoints.push([e - leg.distanceM * Math.sin(rad), nn - leg.distanceM * Math.cos(rad)]);
+  }
+
+  const gapStart = forwardPoints[forwardPoints.length - 1];
+  const gapEnd = backwardPoints[backwardPoints.length - 1];
+  const missingEdgeLengthM = Math.hypot(gapEnd[0] - gapStart[0], gapEnd[1] - gapStart[1]);
+
+  const maxKnown = Math.max(...legs.map((l) => l.distanceM));
+  if (missingEdgeLengthM < BEST_EFFORT_MIN_EDGE_M || missingEdgeLengthM > maxKnown * BEST_EFFORT_MAX_EDGE_RATIO) {
+    return null;
+  }
+
+  // Full vertex cycle in walking order: the forward-walked prefix, then
+  // the backward-walked suffix reversed back into forward order (its own
+  // first point is `start` again, already present at the head of
+  // forwardPoints, so it's dropped here rather than duplicated).
+  const points = [...forwardPoints, ...backwardPoints.slice(1).reverse()];
+
+  return { points, missingEdgeIndex: gapIndex, missingEdgeLengthM, totalEdges: n, usedLegs: legs.length };
+}
+
 // --- Plausibility gates -------------------------------------------------
 
 function withinPlausibleSpan(pairs: Array<[number, number]>): boolean {
@@ -1571,13 +1699,54 @@ async function attemptExtraction(
     const legs = pairNearestLegs(bearings, distances, words);
     debugInfo.legs = legs;
 
+    // Best-effort fallback: when the beacon count says the plot has one
+    // more side than we ever found a bearing for, that side is still
+    // solvable by subtraction (see bestEffortClosingOrder) -- tried only
+    // after the real, fully-confirmed path has already failed, and only
+    // accepted if it survives the exact same plausibility gates
+    // (span, stated-area cross-check, Nigeria bounds) as a normal result.
+    // Disclosed to the caller via `note` rather than shown as
+    // equally-trustworthy, since the ordinary closure check -- the one
+    // thing here that catches a misread digit in a "confirmed" leg --
+    // can't do its job once one edge is solved-for instead of read.
+    const tryBestEffort = (): PlanOcrResult | null => {
+      const effort = bestEffortClosingOrder(start, legs, edges);
+      if (!effort) return null;
+
+      if (!withinPlausibleSpan(effort.points)) return null;
+
+      const areaCheck = areaMismatch(fullText, effort.points);
+      if (areaCheck && !areaWithinTolerance(areaCheck)) return null;
+
+      const points = effort.points.map(([easting, northing]) => pointToLatLng(easting, northing, system));
+      if (!withinNigeria(points)) return null;
+
+      debugInfo.method = "traverse";
+      debugInfo.areaCheck = areaCheck;
+      debugInfo.bestEffort = {
+        missingEdgeIndex: effort.missingEdgeIndex,
+        missingEdgeLengthM: effort.missingEdgeLengthM,
+        totalEdges: effort.totalEdges,
+        usedLegs: effort.usedLegs,
+      };
+
+      const disclosure = `We could read ${effort.usedLegs} of this plot's ${effort.totalEdges} boundary lines directly from your plan; the remaining line was calculated to close the shape and could not be independently confirmed from your document. Treat this preview as a best-effort approximation, not a fully verified boundary.`;
+
+      return {
+        status: "available",
+        coordinates: points,
+        note: [note, disclosure].filter(Boolean).join(" "),
+        debug: debug(),
+      };
+    };
+
     // Distinct from "insufficient_coordinates": the plot's position was
     // found, it's the boundary itself that couldn't be read. Reporting both
     // as the same thing sends anyone debugging a plan down the wrong path.
     // "conflicting_labels" is more specific still -- text was found, but it
     // contradicted itself about which edge it belonged to.
     if (legs.length < MIN_POINTS) {
-      return unavailable(hadConflict ? "conflicting_labels" : "insufficient_legs");
+      return tryBestEffort() ?? unavailable(hadConflict ? "conflicting_labels" : "insufficient_legs");
     }
 
     const best = bestClosingOrder(start, legs, edges);
@@ -1590,7 +1759,7 @@ async function attemptExtraction(
     debugInfo.closureErrorM = best.closureError;
 
     if (best.closureError > tolerance) {
-      return unavailable("traverse_did_not_close");
+      return tryBestEffort() ?? unavailable("traverse_did_not_close");
     }
 
     if (!withinPlausibleSpan(best.points)) {
